@@ -50,6 +50,7 @@ pub fn build(b: *std.Build) void {
         "sh",   "ls",   "cat",  "echo", "ps",
         "uname", "sleep", "hello", "forkdemo",
         "ping", "ifconfig",
+        "beep", "music",
     };
     const user_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,

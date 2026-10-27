@@ -83,6 +83,9 @@ export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
     // 在 QEMU 网络层排队不投递——下面的 tick 演示等待恰好把它等过去
     _ = @import("net.zig").init();
 
+    // ---- 音频（AC'97；失败不致命，无后端时保持静音）----
+    _ = @import("audio.zig").init();
+
     // 开中断！从这一刻起内核是被中断驱动的
     asm volatile ("sti");
     console.kprintf("boot: interrupts enabled\n", .{});

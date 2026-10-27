@@ -57,6 +57,13 @@ qemu-system-x86_64 -cdrom build/zos.iso -m 256M        # VGA 显示 + 键盘
 python3 scripts/test.py uname -a ls / cat /etc/motd ps forkdemo
 ```
 
+音频子系统（AC'97 + DDS 合成，QEMU 需 `-device AC97`）：
+
+```bash
+# 串口 shell 里： beep 440 500    music
+python3 scripts/audiotest.py   # wav 录音验证频率/时长（详见 docs/audio.md）
+```
+
 内核控制台同时输出到 VGA 文本屏（0xB8000）与 COM1 串口；
 `qemu -serial stdio` 时串口就是完整终端（输出 + 输入 + 回显）。
 
@@ -100,6 +107,7 @@ python3 scripts/guishot.py     # 自动开机→点菜单→开窗口→拖动�
 | `kernel/gui.zig` | **GUI 合成器** | VBE 帧缓冲、分层合成、脏矩形重绘、Win3.1 桌面/任务栏 |
 | `kernel/mouse.zig` | **PS/2 鼠标** | 8042 aux 口、IRQ12、三字节数据包协议 |
 | `kernel/font.zig` | **位图字体** | 8x16（scripts/genfont.py 从 PSF 控制台字体生成） |
+| `kernel/audio.zig` | **音频子系统** | AC'97 驱动（NAM/NABM、BDL 描述符环 DMA）、DDS 正弦合成 |
 | `kernel/syscall.zig` | 系统调用 | int 0x80 入口分发、POSIX 子集实现 |
 | `userland/lib/zos.zig` | 系统调用层 | int 0x80 封装、Zig 版 printf、空闲链表 malloc |
 | `userland/lib/libc.zig` | **libc（C ABI）** | string/ctype/stdlib/errno/stdio(FILE)/dirent/qsort 导出 |
@@ -109,6 +117,7 @@ python3 scripts/guishot.py     # 自动开机→点菜单→开窗口→拖动�
 | `userland/sh.zig` | shell | read→fork→exec→wait 循环、内建命令 |
 | `userland/*.zig` | Zig 命令 | ls cat echo ps uname sleep hello forkdemo |
 | `userland/wc.c` `cdemo.c` | **C 程序** | 真 Unix wc 移植 + libc 全家桶演示 |
+| `userland/beep.zig` `music.zig` | **音频命令** | AC'97 蜂鸣 / 欢乐颂旋律（zos_beep 505） |
 | `scripts/test.py` | 自动化测试 | PTY 驱动 QEMU 串口的集成测试 |
 
 ## 内存布局

@@ -37,7 +37,7 @@ fn configAddr(bus: u8, dev: u8, func: u8, off: u8) u32 {
         (@as(u32, @intCast(func)) << 8) | off;
 }
 
-fn configRead32(bus: u8, dev: u8, func: u8, off: u8) u32 {
+pub fn configRead32(bus: u8, dev: u8, func: u8, off: u8) u32 {
     serial.outw(0xCF8, configAddr(bus, dev, func, off));
     return serial.inw(0xCFC);
 }
@@ -90,6 +90,35 @@ pub fn findE1000() ?Device {
                     @as(u8, dev), func, d.bar0_phys, d.bar0_size / 1024, d.irq_line,
                 });
                 return d;
+            }
+        }
+    }
+    return null;
+}
+
+/// 通用查找（vendor/device 匹配，0 号总线）。
+/// 与 findE1000 不同：BAR0 保留原始值（bit0=1 表示 I/O BAR，基址在低 14 位），
+/// 不做 MMIO 映射——调用方按自己的 BAR 类型处理（audio.zig 的 AC97 是 I/O BAR）。
+pub fn find(vid: u16, did: u16) ?Device {
+    var dev: u8 = 0;
+    while (dev < 32) : (dev += 1) {
+        var func: u8 = 0;
+        while (func < 8) : (func += 1) {
+            const v = configRead32(0, dev, func, 0);
+            const vendor: u16 = @truncate(v);
+            const device: u16 = @truncate(v >> 16);
+            if (vendor == 0xFFFF) continue;
+            if (vendor == vid and device == did) {
+                return Device{
+                    .bus = 0,
+                    .dev = dev,
+                    .func = func,
+                    .vendor = vendor,
+                    .device = device,
+                    .bar0_phys = configRead32(0, dev, func, 0x10), // 原始值
+                    .bar0_size = barSize(0, dev, func, 0),
+                    .irq_line = @truncate(configRead32(0, dev, func, 0x3C)),
+                };
             }
         }
     }

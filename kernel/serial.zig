@@ -70,6 +70,23 @@ pub inline fn inb(port: u16) u8 {
     );
 }
 
+/// 16 位端口读（AC'97 mixer 寄存器是 16 位宽）
+pub inline fn in16(port: u16) u16 {
+    return asm volatile ("inw %[p], %[r]"
+        : [r] "={ax}" (-> u16),
+        : [p] "{dx}" (port),
+    );
+}
+
+/// 16 位端口写
+pub inline fn out16(port: u16, val: u16) void {
+    asm volatile ("outw %[v], %[p]"
+        :
+        : [v] "{ax}" (val),
+          [p] "{dx}" (port),
+    );
+}
+
 /// 停顿一小段（等慢速设备），向端口 0x80 写入无效字节
 pub inline fn ioWait() void {
     outb(0x80, 0);

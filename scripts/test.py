@@ -22,6 +22,9 @@ QEMU_CMD = [
     "-no-reboot",
     "-netdev", "user,id=n0",
     "-device", "e1000,netdev=n0",
+    # 声卡在场（无音频后端，静音）——回归顺便覆盖 audio.init 路径
+    "-audiodev", "none,id=snd0",
+    "-device", "AC97,audiodev=snd0",
 ]
 
 BOOT_TIMEOUT = 30  # 等待 shell 提示的最长秒数

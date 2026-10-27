@@ -137,6 +137,16 @@ python3 scripts/guishot.py    # 开机→悬停→菜单→About→拖动，产�
 HMP 的 `mouse_move`/`mouse_button`/`screendump` 驱动交互与截图，
 PPM 由脚本内置的 zlib 编码器转 PNG（无第三方依赖）。
 
+### 4.2 音频验证（scripts/audiotest.py）
+
+声音无法断言，验证链是 QEMU wav 后端录音 → 波形分析（详见
+[audio.md §7](audio.md#7-验证方法scriptsaudiotestpy)）：
+
+```bash
+python3 scripts/audiotest.py
+# [analysis] duration=0.51s freq=441Hz rms=6950 → [PASS]
+```
+
 ## 5. 调试
 
 ### 5.1 串口即日志

@@ -34,6 +34,7 @@ export fn main() i32 {
                 \\commands: ls [dir]  cat <file>  echo <text>  ps  uname
                 \\          sleep <sec>  hello  forkdemo  wc [-c|-l|-w]  cdemo
                 \\          ifconfig  ping <ip> [n]  curl http://host[:port]/path
+                \\          beep [hz] [ms]  music
                 \\builtins: cd <dir>  pwd  help  exit
                 \\note: 10.0.2.2 = 宿主机（QEMU user 网络）
                 \\

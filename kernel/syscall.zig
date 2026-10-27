@@ -54,6 +54,7 @@ const SYS_zos_psinfo = 500; // ZOS 自定义：读取进程表（ps 命令用）
 const SYS_zos_ping = 501; // ZOS 自定义：ICMP ping
 const SYS_zos_http = 502; // ZOS 自定义：阻塞式 HTTP GET
 const SYS_zos_net_info = 503; // ZOS 自定义：网络配置字符串
+const SYS_zos_beep = 505; // ZOS 自定义：AC'97 蜂鸣（正弦单音）
 
 // ---- errno ----
 const EPERM: isize = -1;
@@ -125,6 +126,7 @@ pub fn handle(frame: *TrapFrame) void {
         SYS_zos_ping => @import("net.zig").ping(@truncate(a1), @truncate(a2)),
         SYS_zos_http => sysHttpGet(a1, @truncate(a2), a3, frame),
         SYS_zos_net_info => sysNetInfo(a1, a2),
+        SYS_zos_beep => sysBeep(a1, a2),
         else => ENOSYS,
     };
 
@@ -500,6 +502,12 @@ fn sysNetInfo(buf: usize, len: usize) isize {
     @memcpy(userSlice(buf, info.len), info);
     _ = m;
     return @intCast(info.len);
+}
+
+/// zos_beep(freq, ms)：阻塞播放一段正弦纯音（AC'97）
+fn sysBeep(freq: usize, ms: usize) isize {
+    if (freq < 20 or freq > 8000 or ms == 0 or ms > 10000) return EINVAL;
+    return @import("audio.zig").playTone(@intCast(freq), @intCast(ms));
 }
 
 fn sysPsinfo(buf: usize, max: usize) isize {

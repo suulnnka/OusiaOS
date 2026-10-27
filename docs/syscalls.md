@@ -48,6 +48,7 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | 501 | zos_ping | (ip, seq) | ICMP ping，返回 RTT(ms) |
 | 502 | zos_http_get | (host, port, path, out*, out_len) | 阻塞式 DNS+TCP+HTTP GET |
 | 503 | zos_net_info | (buf, len) | 网络配置串（ifconfig 用） |
+| 505 | zos_beep | (freq, ms) | AC'97 正弦单音，阻塞播完（audio 用） |
 
 ## 2. 分组说明
 
@@ -113,6 +114,9 @@ console（`/dev/console`，vfs 节点 1），fork 继承、execve 保留。
   阻塞完成 DNS→ARP→TCP→HTTP，响应（含头）拷入 out，返回长度。
 - **zos_net_info(buf, len)**：返回
   `"ip=10.0.2.15 mask=255.255.255.0 gw=10.0.2.2 dns=10.0.2.3\n"`。
+- **zos_beep(freq, ms)**：阻塞播放正弦单音（详见 [audio.md](audio.md)）。
+  freq 限 20..8000、ms 限 1..10000；返回 -19 无声卡、-11 有播放进行中、
+  -22 参数越界。
 
 ## 3. errno 一览（内核实际会返回的）
 

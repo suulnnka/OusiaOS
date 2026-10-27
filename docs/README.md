@@ -13,6 +13,7 @@
 | [syscalls.md](syscalls.md) | 系统调用参考：编号、参数、语义、错误码、使用示例 | 写用户程序、调系统调用时查阅 |
 | [network.md](network.md) | 网络栈：PCI 枚举、e1000 驱动、ARP/IP/ICMP/DNS/TCP/HTTP | 学驱动与协议实现 |
 | [gui.md](gui.md) | 图形界面：VBE 帧缓冲、合成器、Win3.1 桌面/任务栏、PS/2 鼠标 | 学图形子系统与输入驱动 |
+| [audio.md](audio.md) | 音频：AC'97 驱动、BDL 描述符环、DDS 合成、wav 录音验证 | 学 DMA 设备驱动与音频 |
 | [userland.md](userland.md) | 用户态：crt0、zos.zig、libc、shell，以及 C 程序移植指南 | 移植自己的程序进 ZOS |
 | [build-and-debug.md](build-and-debug.md) | 构建系统、运行方式、自动化测试、调试手段 | 改代码遇到问题时查阅 |
 
