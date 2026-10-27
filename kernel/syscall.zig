@@ -50,11 +50,26 @@ const SYS_chdir = 80;
 const SYS_dup = 32;
 const SYS_getdents64 = 217;
 const SYS_time = 201;
+// ---- Linux 权限 ----
+const SYS_chmod = 90;
+const SYS_chown = 92;
+const SYS_getuid = 102;
+const SYS_getgid = 104;
+const SYS_setuid = 105;
+const SYS_setgid = 106;
+// ---- ZOS 扩展 ----
 const SYS_zos_psinfo = 500; // ZOS 自定义：读取进程表（ps 命令用）
 const SYS_zos_ping = 501; // ZOS 自定义：ICMP ping
 const SYS_zos_http = 502; // ZOS 自定义：阻塞式 HTTP GET
 const SYS_zos_net_info = 503; // ZOS 自定义：网络配置字符串
 const SYS_zos_beep = 505; // ZOS 自定义：AC'97 蜂鸣（正弦单音）
+// ---- ZOS 窗口服务（用户态 GUI 应用）----
+const SYS_win_create = 510;
+const SYS_win_present = 511;
+const SYS_win_poll = 512;
+const SYS_win_wait = 513;
+const SYS_win_color = 514;
+const SYS_win_fmt = 515;
 
 // ---- errno ----
 const EPERM: isize = -1;
@@ -122,11 +137,23 @@ pub fn handle(frame: *TrapFrame) void {
         SYS_dup => sysDup(a1),
         SYS_getdents64 => sysGetdents64(a1, a2, a3),
         SYS_time => @intCast(pit.uptimeMs() / 1000),
+        SYS_chmod => sysChmod(a1, a2),
+        SYS_chown => sysChown(a1, a2, @intCast(a3)),
+        SYS_getuid => @intCast(proc.current().?.uid),
+        SYS_getgid => @intCast(proc.current().?.gid),
+        SYS_setuid => sysSetUid(@intCast(a1)),
+        SYS_setgid => sysSetGid(@intCast(a1)),
         SYS_zos_psinfo => sysPsinfo(a1, a2),
         SYS_zos_ping => @import("net.zig").ping(@truncate(a1), @truncate(a2)),
         SYS_zos_http => sysHttpGet(a1, @truncate(a2), a3, frame),
         SYS_zos_net_info => sysNetInfo(a1, a2),
         SYS_zos_beep => sysBeep(a1, a2),
+        SYS_win_create => @import("winsys.zig").sysCreate(a1, a2, a3),
+        SYS_win_present => @import("winsys.zig").sysPresent(),
+        SYS_win_poll => @import("winsys.zig").sysPoll(a1, a2),
+        SYS_win_wait => @import("winsys.zig").sysWait(a1, a2, @intCast(a3)),
+        SYS_win_color => @import("winsys.zig").sysColor(a1, a2, a3),
+        SYS_win_fmt => @import("winsys.zig").sysFmt(),
         else => ENOSYS,
     };
 
@@ -181,12 +208,19 @@ fn sysOpen(path: usize, flags: usize, mode: usize) isize {
     if (plen == 0) return EINVAL;
     const path_s = userSliceConst(path, plen);
 
-    const node = vfs.resolve(path_s, p.cwd()) orelse return ENOENT;
+    // 凭证解析：目录遍历查 x；ENOENT 与 EACCES 分开报
+    const node = vfs.resolveCred(path_s, p.cwd(), p.uid, p.gid) catch |e| switch (e) {
+        error.Access => return EACCES,
+        error.NoEnt => return ENOENT,
+    };
     const inf = vfs.info(node);
 
     // 只读文件系统：写打开只允许 console
     if ((flags & 3) != O_RDONLY and !inf.is_console) return EROFS;
     if (inf.is_dir and (flags & 3) != O_RDONLY) return EISDIR;
+
+    // 读权限：owner/group/other 的 r 位（root 旁路；console 总可读）
+    if (!inf.is_console and !vfs.mayAccess(inf, p.uid, p.gid, .r)) return EACCES;
 
     // 分配 fd
     var fd: ?usize = null;
@@ -232,6 +266,8 @@ fn sysFstat(fd: usize, buf: usize) isize {
     const b = userSlice(buf, 144);
     @memset(b, 0);
     writeU32(b, 24, inf.mode);
+    writeU32(b, 28, inf.uid); // st_uid
+    writeU32(b, 32, inf.gid); // st_gid
     writeU64(b, 48, inf.size);
     writeU64(b, 8, @intCast(f.node)); // st_ino
     return 0;
@@ -347,8 +383,10 @@ fn sysExecve(path: usize, argv: usize) isize {
 
     if (proc.execve(path_s, argv_slices[0..argc])) {
         return 0; // 不会到达：成功路径直接进入新程序
+    } else |e| switch (e) {
+        error.Access => return EACCES,
+        else => return ENOENT,
     }
-    return ENOENT;
 }
 
 fn sysExit(code: usize) isize {
@@ -469,6 +507,60 @@ fn sysGetdents64(fd: usize, buf: usize, count: usize) isize {
     return @intCast(ctx.used);
 }
 
+
+// ================= Linux 权限 =================
+
+/// chmod(path, mode)：文件 owner 或 root 可改；tarfs 数据只读，
+/// 但权限位是内核 RAM 里的副本——改动即刻生效、不落盘（教学取舍）
+fn sysChmod(path: usize, mode: usize) isize {
+    const p = proc.current().?;
+    const plen = cstrLen(path, 255);
+    if (plen == 0) return EINVAL;
+    const path_s = userSliceConst(path, plen);
+
+    const node = vfs.resolveCred(path_s, p.cwd(), p.uid, p.gid) catch |e| switch (e) {
+        error.Access => return EACCES,
+        error.NoEnt => return ENOENT,
+    };
+    const inf = vfs.info(node);
+    if (node < 2) return EACCES; // 根目录/控制台不许改（教学简化）
+    if (p.uid != 0 and p.uid != inf.uid) return EPERM; // 只有 owner/root
+
+    const n = vfs.nodeMut(node) orelse return EACCES;
+    n.mode = (n.mode & 0o777000) | @as(u32, @intCast(mode & 0o777));
+    return 0;
+}
+
+/// chown(path, uid, gid)：root 专属（gid=-1 表示不改）
+fn sysChown(path: usize, uid: usize, gid: i64) isize {
+    const p = proc.current().?;
+    if (p.uid != 0) return EPERM;
+    const plen = cstrLen(path, 255);
+    if (plen == 0) return EINVAL;
+    const path_s = userSliceConst(path, plen);
+
+    const node = vfs.resolve(path_s, p.cwd()) orelse return ENOENT;
+    if (node < 2) return EACCES;
+    const n = vfs.nodeMut(node) orelse return EACCES;
+    n.uid = @intCast(@min(uid, 65535));
+    if (gid >= 0) n.gid = @intCast(@min(@as(u64, @intCast(gid)), 65535));
+    return 0;
+}
+
+/// setuid：root 可切任意；普通用户只能"切到自己"（Linux 同款限制）
+fn sysSetUid(new_uid: u32) isize {
+    const p = proc.current().?;
+    if (p.uid != 0 and new_uid != p.uid) return EPERM;
+    p.uid = new_uid;
+    return 0;
+}
+
+fn sysSetGid(new_gid: u32) isize {
+    const p = proc.current().?;
+    if (p.uid != 0 and p.gid != 0 and new_gid != p.gid) return EPERM;
+    p.gid = new_gid;
+    return 0;
+}
 
 // ================= ZOS 扩展 =================
 

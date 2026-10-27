@@ -14,9 +14,19 @@ const std = @import("std");
 const gdt = @import("gdt.zig");
 const console = @import("console.zig");
 
+/// SSE 寄存器现场（XMM0-15 + MXCSR）。用 movups 保存/恢复而非 fxsave：
+/// 免 16 字节对齐要求，也不需要 x87（Zig 的 f32/f64 全部走 SSE2 指令）。
+pub const XMM_SAVE_BYTES = 264; // 16*16 + 4(MXCSR) + 4(pad)
+
 /// 中断入口时完整的寄存器现场（教学重点：字段顺序 = 栈上的排列顺序）
 pub const TrapFrame = extern struct {
     // ---- 由 trapCommon 入口桩压入（从低地址到高地址）----
+    // SSE 现场放在最低处：入口先 sub 栈再保存，epilogue 加载后跳过它弹 GPR。
+    // 为什么必须保存：处理程序本身会用 SSE（GUI 的 GL 光栅化、@memcpy 的
+    // SIMD 内联），若不打断现场保存，用户态浮点代码会被中断处理践踏。
+    xmm: [16]u128 = @splat(0),
+    mxcsr: u32 = 0x1F80, // 默认值：全部浮点异常屏蔽
+    pad0: u32 = 0,
     r15: u64,
     r14: u64,
     r13: u64,
@@ -69,7 +79,11 @@ const Stub = fn () callconv(.naked) noreturn;
 /// 这些向量的异常 CPU 会自动压入错误码，入口桩不再补 0
 const has_errcode = [_]u8{ 8, 10, 11, 12, 13, 14, 17, 21 };
 
-/// 统一入口：保存通用寄存器 → 调用 trapDispatch → 恢复现场 → iretq
+/// 统一入口：保存通用寄存器 + SSE 现场 → 调用 trapDispatch → 恢复现场 → iretq
+///
+/// XMM 现场保存是"无条件"的：虽然只在用户态浮点代码被打断时才必要，
+/// 但判断 CPL 需要先读栈上的 CS——不如直接保存，换来"显然正确"。
+/// 代价是每次陷入多 ~270 字节访存（QEMU TCG 下完全无感）。
 export fn trapCommon() callconv(.naked) noreturn {
     asm volatile (
         \\pushq %rdi
@@ -87,11 +101,47 @@ export fn trapCommon() callconv(.naked) noreturn {
         \\pushq %r13
         \\pushq %r14
         \\pushq %r15
-        \\movq %rsp, %rdi          # rdi = TrapFrame*
+        \\subq $264, %rsp          # TrapFrame 的 XMM 区块（movups 免对齐要求）
+        \\movups %xmm0, 0(%rsp)
+        \\movups %xmm1, 16(%rsp)
+        \\movups %xmm2, 32(%rsp)
+        \\movups %xmm3, 48(%rsp)
+        \\movups %xmm4, 64(%rsp)
+        \\movups %xmm5, 80(%rsp)
+        \\movups %xmm6, 96(%rsp)
+        \\movups %xmm7, 112(%rsp)
+        \\movups %xmm8, 128(%rsp)
+        \\movups %xmm9, 144(%rsp)
+        \\movups %xmm10, 160(%rsp)
+        \\movups %xmm11, 176(%rsp)
+        \\movups %xmm12, 192(%rsp)
+        \\movups %xmm13, 208(%rsp)
+        \\movups %xmm14, 224(%rsp)
+        \\movups %xmm15, 240(%rsp)
+        \\stmxcsr 256(%rsp)
+        \\movq %rsp, %rdi          # rdi = TrapFrame*（指向 xmm[0]）
         \\movq %rsp, %rbp          # 备份（rbp 是被调用者保存寄存器）
         \\andq $-16, %rsp          # 按 SysV ABI 对齐到 16 字节
         \\callq trapDispatch
         \\movq %rbp, %rsp
+        \\movups 0(%rbp), %xmm0
+        \\movups 16(%rbp), %xmm1
+        \\movups 32(%rbp), %xmm2
+        \\movups 48(%rbp), %xmm3
+        \\movups 64(%rbp), %xmm4
+        \\movups 80(%rbp), %xmm5
+        \\movups 96(%rbp), %xmm6
+        \\movups 112(%rbp), %xmm7
+        \\movups 128(%rbp), %xmm8
+        \\movups 144(%rbp), %xmm9
+        \\movups 160(%rbp), %xmm10
+        \\movups 176(%rbp), %xmm11
+        \\movups 192(%rbp), %xmm12
+        \\movups 208(%rbp), %xmm13
+        \\movups 224(%rbp), %xmm14
+        \\movups 240(%rbp), %xmm15
+        \\ldmxcsr 256(%rbp)
+        \\addq $264, %rsp          # 跳过 XMM 区块
         \\popq %r15
         \\popq %r14
         \\popq %r13

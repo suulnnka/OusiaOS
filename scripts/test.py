@@ -41,7 +41,10 @@ def start_fixture_httpd():
     class Quiet(handler):
         def log_message(self, *a): pass
     import functools
-    httpd = socketserver.TCPServer(("127.0.0.1", 8099), functools.partial(Quiet, directory=d))
+
+    class Reusable(socketserver.TCPServer):
+        allow_reuse_address = True  # 上次的连接 TIME_WAIT 不阻塞重跑
+    httpd = Reusable(("127.0.0.1", 8099), functools.partial(Quiet, directory=d))
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     return httpd
@@ -106,8 +109,9 @@ def run_session(commands):
 if __name__ == "__main__":
     cmds = sys.argv[1:] or [
         "uname -a", "ls /", "cat /etc/motd", "echo ok", "ps", "forkdemo",
-        "hello", "cdemo", "wc /etc/motd",
+        "fputest", "hello", "cdemo", "wc /etc/motd",
         "ifconfig", "ping 10.0.2.2 3", "curl http://10.0.2.2:8099/hello.txt",
+        "glcube",
     ]
     httpd = start_fixture_httpd()
     try:

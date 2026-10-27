@@ -107,6 +107,12 @@ pub const SYS_chdir = 80;
 pub const SYS_dup = 32;
 pub const SYS_getdents64 = 217;
 pub const SYS_time = 201;
+pub const SYS_chmod = 90;
+pub const SYS_chown = 92;
+pub const SYS_getuid = 102;
+pub const SYS_getgid = 104;
+pub const SYS_setuid = 105;
+pub const SYS_setgid = 106;
 
 // ---------------- POSIX 风格 API ----------------
 
@@ -200,6 +206,91 @@ pub const Dirent = struct {
         return self.name[0..self.name_len];
     }
 };
+
+// ---------------- Linux 权限 ----------------
+//
+// st_mode 的类型位：S_IFREG=0100000 S_IFDIR=040000 S_IFCHR=020000；
+// 权限位 rwxrwxrwx 与 Linux 相同（owner/group/other 各 3 位）。
+
+pub const Stat = struct {
+    mode: u32 = 0,
+    uid: u32 = 0,
+    gid: u32 = 0,
+    size: u64 = 0,
+};
+
+/// fstat 封装：x86_64 struct stat 关键字段 mode@24 uid@28 gid@32 size@48
+pub fn fstat(fd: i32) ?Stat {
+    var buf: [144]u8 = undefined;
+    const r = syscall3(SYS_fstat, @intCast(fd), @intFromPtr(&buf), 0);
+    if (r != 0) return null;
+    const rd32 = struct {
+        fn f(b: []const u8, off: usize) u32 {
+            return b[off] | (@as(u32, b[off + 1]) << 8) | (@as(u32, b[off + 2]) << 16) | (@as(u32, b[off + 3]) << 24);
+        }
+    }.f;
+    const rd64 = struct {
+        fn f(b: []const u8, off: usize) u64 {
+            var v: u64 = 0;
+            for (0..8) |i| v |= @as(u64, b[off + i]) << @intCast(8 * i);
+            return v;
+        }
+    }.f;
+    return .{ .mode = rd32(&buf, 24), .uid = rd32(&buf, 28), .gid = rd32(&buf, 32), .size = rd64(&buf, 48) };
+}
+
+/// stat(path) 封装（open+fstat+close）
+pub fn stat(path: []const u8) ?Stat {
+    const fd = open(path, 0);
+    if (fd < 0) return null;
+    defer _ = close(@intCast(fd));
+    return fstat(@intCast(fd));
+}
+
+pub fn getuid() u32 {
+    return @intCast(@max(0, syscall0(SYS_getuid)));
+}
+
+pub fn getgid() u32 {
+    return @intCast(@max(0, syscall0(SYS_getgid)));
+}
+
+/// root 可切任意 uid；普通用户只能切到自己（Linux 同款限制）
+pub fn setuid(uid: u32) isize {
+    return syscall1(SYS_setuid, uid);
+}
+
+pub fn setgid(gid: u32) isize {
+    return syscall1(SYS_setgid, gid);
+}
+
+pub fn chmod(path: []const u8, mode: u32) isize {
+    var zbuf: [256]u8 = undefined;
+    const p = withNul(&zbuf, path);
+    return syscall3(SYS_chmod, @intFromPtr(p.ptr), mode, 0);
+}
+
+/// chown(path, uid, gid)；gid 传 -1 表示不改 gid
+pub fn chown(path: []const u8, uid: u32, gid: i64) isize {
+    var zbuf: [256]u8 = undefined;
+    const p = withNul(&zbuf, path);
+    return syscall3(SYS_chown, @intFromPtr(p.ptr), uid, @as(usize, @bitCast(gid)));
+}
+
+/// "rwxr-x--t" 风格权限串（含类型位 d/-/c）
+pub fn modeString(mode: u32, out: *[10]u8) []const u8 {
+    out[0] = switch (mode & 0o170000) {
+        0o040000 => 'd',
+        0o020000 => 'c',
+        else => '-',
+    };
+    const bits = "rwxrwxrwx";
+    for (bits, 1..) |b, i| {
+        const bitpos: u5 = @intCast(9 - i);
+        out[i] = if ((mode >> bitpos) & 1 != 0) b else '-';
+    }
+    return out[0..10];
+}
 
 /// 列目录（getdents64 封装，一次取全部）
 pub fn listDir(path: []const u8, out: []Dirent) isize {

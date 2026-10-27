@@ -15,8 +15,10 @@ import time
 import zlib
 
 ISO = "build/zos.iso"
-MON = "/tmp/zos-mon.sock"
-SER = "/tmp/zos-serial.log"
+# 多个 ZCode 会话并行时会互相覆盖：可用环境变量隔离三件套
+MON = os.environ.get("ZOS_MON", "/tmp/zos-mon.sock")
+SER = os.environ.get("ZOS_SER", "/tmp/zos-serial.log")
+SHOT = os.environ.get("ZOS_SHOT", "/tmp/zos-shot")
 QEMU = [
     "qemu-system-x86_64",
     "-cdrom", ISO, "-m", "256M",
@@ -80,8 +82,8 @@ def boot():
 
 
 def shot(name):
-    hmp("screendump /tmp/zos-shot-%s.ppm" % name, 0.5)
-    ppm_to_png("/tmp/zos-shot-%s.ppm" % name, "/tmp/zos-shot-%s.png" % name)
+    hmp("screendump %s-%s.ppm" % (SHOT, name), 0.5)
+    ppm_to_png("%s-%s.ppm" % (SHOT, name), "%s-%s.png" % (SHOT, name))
     print("shot:", name)
 
 
@@ -160,14 +162,16 @@ def open_menu_item(item_y, name):
     print("open:", name)
 
 
-# 菜单条目纵坐标（menuRect.y=293 + 3 起每项 18px、分隔 5px）
+# 菜单条目纵坐标（menuRect 顶 275 + 3 起，每项 18px、分隔 5px；
+# "3D Demos" 在 Minesweeper 之后——增删菜单项记得同步这里）
 MENU = {
-    "files": 305,
-    "note": 323,
-    "term": 341,
-    "paint": 359,
-    "calc": 377,
-    "mine": 395,
+    "files": 287,
+    "note": 305,
+    "term": 323,
+    "paint": 341,
+    "calc": 359,
+    "mine": 377,
+    "gl": 395,
     "about": 418,
 }
 
@@ -188,51 +192,57 @@ def main():
         shot("2-menu")
         click(320, 200)       # 点桌面收起菜单（否则 open_menu_item 的第一下会变成关菜单）
 
-        # ---- 文件浏览器：根目录 → /etc → 预览 issue ----
+        # ---- 文件浏览器（用户进程 /bin/fm，级联摆位 (24,14)）----
         open_menu_item(MENU["files"], "File Manager")
+        time.sleep(0.8)      # 等进程启动 + win_create + 首帧 present
         shot("3-files-root")
-        click(60, 110)       # 根列表第 3 行 "etc"（bin/dev/etc 三个目录排前）
+        click(60, 105)       # 根列表第 3 行 "etc"（客户区 (27,42)，列表 y=66）
         shot("4-files-etc")
-        click(60, 94)        # /etc 列表：".." 之后的第 1 个文件 "issue"
+        click(60, 90)        # /etc：".." 之后的第 1 个文件 "issue"
         shot("5-files-preview")
 
         # ---- 终端：镜像串口会话；sendkey 打一条命令（必须在记事本之前，
         #      记事本拿走键盘焦点后按键就不再进 shell 了）----
         open_menu_item(MENU["term"], "Terminal")
+        time.sleep(0.4)
         shot("6-term-bootlog")
         type_text("ls\n")
         time.sleep(0.5)
         shot("7-term-ls")
 
-        # ---- 画图：选红色 → 画布上拖一条自由曲线 ----
+        # ---- 画图（/bin/paint，级联 (96,74)→客户区 (99,102)）----
         open_menu_item(MENU["paint"], "Paint")
+        time.sleep(0.8)
         shot("8-paint-new")
-        click(75, 80)        # 第 3 个色板 = 红色（2 列 x 8 行，index 2）
-        drag(200, 120, 420, 280)  # 画布内拖动 = 鼠标捕获连续作画
+        click(75, 68)        # 红色色板 idx2（slot1 工具栏 col0,row1：(69..93,62..75)）
+        drag(200, 150, 420, 280)  # 画布 (171..471, 106..306) 内拖动
         shot("9-paint-draw")
 
-        # ---- 计算器：1 + 2 = 3 ----
+        # ---- 计算器（/bin/calc，级联 (132,104)→客户区 (135,132)）----
         open_menu_item(MENU["calc"], "Calculator")
+        time.sleep(0.8)
         shot("10-calc-new")
-        for (x, y) in [(330, 260), (450, 260), (370, 260), (450, 292)]:
-            click(x, y)      # 1 + 2 =
+        for (x, y) in [(131, 251), (251, 251), (171, 251), (251, 283)]:
+            click(x, y)      # 1 + 2 = （键阵 gx=150 gy=172，34x26 键 + 6 缝）
         shot("11-calc-3")
 
         # ---- 记事本：键盘焦点（此刻 sendkey 进的是记事本，不是 shell）----
         open_menu_item(MENU["note"], "Notepad")
+        time.sleep(0.8)      # /bin/note 启动；活动窗口=它 → 键盘归它
         shot("12-note-new")
         type_text("hello zos\nsecond line")
         time.sleep(0.3)
         shot("13-note-text")
 
-        # ---- 扫雷：翻一格 + 右键插旗 ----
+        # ---- 扫雷（/bin/mine，级联 (168,134)→客户区 (171,162)）----
         open_menu_item(MENU["mine"], "Minesweeper")
+        time.sleep(0.8)
         shot("14-mine-new")
-        click(536, 284)      # 棋盘 (4,4)：首次点击保证安全
-        time.sleep(0.3)
+        click(268, 298)      # 棋盘 (4,4)：首次点击保证安全（gx=176 gy=206）
+        time.sleep(0.5)
         shot("15-mine-open")
-        rightclick(496, 244) # 棋盘 (2,2) 格心：插旗
-        time.sleep(0.3)
+        rightclick(186, 218) # 棋盘 (0,0) 格心：插旗（远离首击洪泛区）
+        time.sleep(0.5)
         shot("16-mine-flag")
 
         # ---- About + 拖拽（原有回归流程） ----

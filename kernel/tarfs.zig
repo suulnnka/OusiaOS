@@ -28,6 +28,12 @@ pub const Node = struct {
     /// 文件数据（位于 initrd 内存中，直接映射后的虚拟地址切片）
     data: ?[]const u8 = null,
 
+    // ---- Linux 风格权限（来自 ustar 头的 mode/uid/gid 字段）----
+    /// st_mode：类型位(IFREG/IFDIR) + rwxrwxrwx 权限位
+    mode: u32 = 0,
+    uid: u32 = 0,
+    gid: u32 = 0,
+
     pub fn path(self: *const Node) []const u8 {
         return self.path_buf[0..self.path_len];
     }
@@ -41,6 +47,11 @@ pub fn nodeCount() usize {
 }
 
 pub fn getNode(i: usize) *const Node {
+    return &nodes[i];
+}
+
+/// 可变节点（chmod/chown 改内存态权限用）
+pub fn getNodeMut(i: usize) *Node {
     return &nodes[i];
 }
 
@@ -68,12 +79,23 @@ pub fn init() bool {
         // size[12]：八进制字符串
         const size = parseOctal(hdr[124 .. 124 + 12]);
         const typeflag = hdr[156];
+        // mode[8] / uid[8] / gid[8]：八进制（宿主 tar 的权限位原样携带——
+        // mkinitrd.sh 里 chmod 755 bin/* 即成为文件系统的执行位）
+        const raw_mode = parseOctal(hdr[100 .. 100 + 8]);
+        const raw_uid = parseOctal(hdr[108 .. 108 + 8]);
+        const raw_gid = parseOctal(hdr[116 .. 116 + 8]);
 
         if (node_count < MAX_NODES and name_len > 0) {
             const n = &nodes[node_count];
             n.* = .{};
             n.kind = if (typeflag == '5') .dir else .file;
             n.size = if (typeflag == '5') 0 else size;
+            n.uid = @intCast(@min(raw_uid, 65535));
+            n.gid = @intCast(@min(raw_gid, 65535));
+            // 类型位按节点类型重写，权限位取 tar 值；缺省 644/755
+            const perm: u32 = if (raw_mode & 0o777 != 0) @as(u32, @intCast(raw_mode & 0o777)) else (if (n.kind == .dir) @as(u32, 0o755) else @as(u32, 0o644));
+            const type_bits: u32 = if (n.kind == .dir) 0o040000 else 0o100000;
+            n.mode = type_bits | perm;
 
             // 规范化：去掉 "./" 前缀、首 '/'、尾 '/'
             var s: usize = 0;

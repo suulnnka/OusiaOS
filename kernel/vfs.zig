@@ -27,8 +27,65 @@ pub const NodeInfo = struct {
     is_console: bool,
     size: u64,
     /// fstat 的 st_mode: S_IFREG=0100000 S_IFDIR=0040000 S_IFCHR=0020000
+    /// 权限位 rwxrwxrwx 与 Linux 一致
     mode: u32,
+    uid: u32 = 0,
+    gid: u32 = 0,
 };
+
+// ---------------- Linux 风格权限检查 ----------------
+//
+// 规则与 Unix 相同：root(uid 0) 旁路一切；否则按 owner/group/other
+// 三元组取一组判断。r/w 在 open 时查，x 在路径遍历（进入目录）与
+// execve 时查。
+
+pub const Access = enum { r, w, x };
+
+fn permBit(a: Access) u32 {
+    return switch (a) {
+        .r => 4,
+        .w => 2,
+        .x => 1,
+    };
+}
+
+/// uid/gid 是否对 node 拥有 want 权限
+pub fn mayAccess(ni: NodeInfo, uid: u32, gid: u32, want: Access) bool {
+    if (uid == 0) return true; // root 旁路
+    const perm = ni.mode & 0o777;
+    const shift: u5 = if (uid == ni.uid)
+        6 // owner
+    else if (gid == ni.gid)
+        3 // group
+    else
+        0; // other
+    return (perm >> shift) & permBit(want) != 0;
+}
+
+pub const ResolveError = error{ NoEnt, Access };
+
+/// 带凭证的路径解析：逐级检查目录的 x 位（Linux 的 namei 行为）。
+/// 内核自身用 resolve()（root 旁路）。
+pub fn resolveCred(path: []const u8, cwd: []const u8, uid: u32, gid: u32) ResolveError!usize {
+    var buf: [256]u8 = undefined;
+    const n = normalizePath(path, cwd, &buf) orelse return error.NoEnt;
+    const norm = buf[0..n];
+
+    // 逐段检查祖先目录的 x 位（"a/b/c" 检查 a、a/b；norm[0..seg_end]
+    // 是含前导 '/' 的前缀，tarfs 路径要去掉它）
+    var seg_end: usize = 1;
+    while (seg_end < norm.len) : (seg_end += 1) {
+        if (norm[seg_end] == '/') {
+            const dir = tarfs.lookup(norm[1..seg_end]) orelse return error.NoEnt;
+            if (!mayAccess(nodeInfoOf(TARFS_BASE + dir), uid, gid, .x)) return error.Access;
+        }
+    }
+    return resolve(norm, "/") orelse return error.NoEnt;
+}
+
+fn nodeInfoOf(node: usize) NodeInfo {
+    return info(node);
+}
 
 /// 规范化路径：合并 cwd（若相对路径）、消解 "." 与 ".."，输出到 out。
 /// 返回规范路径的字节数（"/a/b" 形式，根为 "/"）。超长返回 null。
@@ -105,18 +162,27 @@ pub fn resolve(path: []const u8, cwd: []const u8) ?usize {
 
 pub fn info(node: usize) NodeInfo {
     return switch (node) {
-        ROOT_NODE => .{ .is_dir = true, .is_console = false, .size = 0, .mode = 0o040755 },
-        CONSOLE_NODE => .{ .is_dir = false, .is_console = true, .size = 0, .mode = 0o020620 },
+        ROOT_NODE => .{ .is_dir = true, .is_console = false, .size = 0, .mode = 0o040755, .uid = 0, .gid = 0 },
+        CONSOLE_NODE => .{ .is_dir = false, .is_console = true, .size = 0, .mode = 0o020600, .uid = 0, .gid = 0 },
         else => blk: {
             const n = tarfs.getNode(node - TARFS_BASE);
             break :blk .{
                 .is_dir = n.kind == .dir,
                 .is_console = false,
                 .size = n.size,
-                .mode = if (n.kind == .dir) 0o040755 else 0o100644,
+                .mode = n.mode,
+                .uid = n.uid,
+                .gid = n.gid,
             };
         },
     };
+}
+
+/// 可变节点访问（chmod/chown 修改内存态权限——tarfs 只读指数据不落盘，
+/// 权限位是内核 RAM 里的副本）
+pub fn nodeMut(node: usize) ?*tarfs.Node {
+    if (node < TARFS_BASE or node >= TARFS_BASE + tarfs.nodeCount()) return null;
+    return tarfs.getNodeMut(node - TARFS_BASE);
 }
 
 /// 读文件/console（console 阻塞按行读）。返回读到的字节数，负值表示错误。

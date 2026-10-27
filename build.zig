@@ -51,6 +51,10 @@ pub fn build(b: *std.Build) void {
         "uname", "sleep", "hello", "forkdemo",
         "ping", "ifconfig",
         "beep", "music",
+        "fputest",
+        "glview",
+        // 用户态 GUI 应用（kernel/winsys.zig 窗口服务）
+        "fm", "note", "paint", "calc", "mine",
     };
     const user_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
@@ -101,7 +105,7 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&install_libc.step);
 
     // ---------------- C 程序（zig cc + libzos.a）----------------
-    const c_progs = [_][]const u8{ "cdemo", "wc", "curl" };
+    const c_progs = [_][]const u8{ "cdemo", "wc", "curl", "glcube" };
     inline for (c_progs) |prog| {
         const cc = b.addSystemCommand(&.{
             b.graph.zig_exe, "cc",
@@ -125,6 +129,18 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&install.step);
     }
 
+    // ---------------- host 单元测试（纯 Zig 模块直接在宿主机跑）----------------
+    // userland/lib/gl.zig（miniGL）刻意不依赖任何内核设施，因此可以在
+    // host 上跑 test 块：数学库精度、光栅化逐像素断言、深度/裁剪/纹理行为。
+    const test_step = b.step("test", "Run host unit tests (miniGL etc.)");
+    const gl_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("userland/lib/gl.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(gl_tests).step);
+
     // ---------------- ISO（GRUB 引导镜像）----------------
     const iso_step = b.step("iso", "Build bootable GRUB ISO (build/zos.iso)");
     const mkiso = b.addSystemCommand(&.{"./scripts/mkiso.sh"});
@@ -138,8 +154,8 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // ---------------- 自动化测试（PTY 驱动串口 shell）----------------
-    const test_step = b.step("test-run", "Boot in QEMU and run scripted shell commands");
+    const testrun_step = b.step("test-run", "Boot in QEMU and run scripted shell commands");
     const test_cmd = b.addSystemCommand(&.{ "python3", "scripts/test.py" });
     test_cmd.step.dependOn(iso_step);
-    test_step.dependOn(&test_cmd.step);
+    testrun_step.dependOn(&test_cmd.step);
 }

@@ -7,7 +7,7 @@ ZOS 是一个为**操作系统课程教学**设计的迷你内核：从 GRUB 引
 > 📚 **深入文档见 [docs/](docs/README.md)**——按子系统展开的源码级讲解：
 > [总体架构](docs/architecture.md) · [内核子系统](docs/kernel.md) ·
 > [系统调用参考](docs/syscalls.md) · [网络栈](docs/network.md) ·
-> [用户态与移植](docs/userland.md) · [构建与调试](docs/build-and-debug.md)
+> [用户态与移植](docs/userland.md) · [miniGL 3D 图形](docs/gl.md) · [构建与调试](docs/build-and-debug.md)
 
 ```
 ZOS 0.1.0 -- a tiny teaching kernel in Zig
@@ -87,6 +87,8 @@ GUI 合成器：青绿桌面、可拖拽窗口（点击自动提到顶层、非�
 - **Minesweeper** —— 经典 9×9/10 雷：左键翻开（首击保护区 +
   空白洪泛）、右键插旗、雷数/笑脸/计时 LED 三件套
 - **About ZOS** —— 版本信息对话框
+- **3D Demos** —— miniGL 软件三维：纹理棋盘立方体 / Gouraud 光照
+  圆环 / 线框波浪地形，点击或左右键切换场景（见下节）
 
 串口 shell 照常可用，两套界面互不干扰。无头环境跑自动化截图与
 鼠标/键盘脚本（开全部七个应用、终端里真打一条 `ls`、记事本打字、
@@ -97,6 +99,27 @@ python3 scripts/guishot.py     # 自动开机→菜单→七应用→拖动，�
 ```
 
 详见 [docs/gui.md](docs/gui.md)。
+
+### miniGL：软件 OpenGL 子集（3D 图形）
+
+`userland/lib/gl.zig` 是自研的 OpenGL 1.x 风格**软件光栅化器**（纯
+Zig、零依赖、宿主机可单测）：立即模式 glBegin/glEnd、矩阵栈、深度
+测试、Gouraud 光照、背面剔除、**透视校正纹理采样**。渲染目标就是
+winsys 的共享表面——纯用户态浮点代码，时钟中断随时打断，靠内核的
+XMM 现场保存（TrapFrame + swtchImpl 两处）保证正确性。
+
+- **glview**（菜单 "3D Demos"，Zig）：三场景演示，TCG 下约 18fps
+- **glcube**（shell 运行，C）：`userland/include/zgl.h` 的 C ABI 证明
+  同一份光栅化器跨语言可用
+- **fputest**（shell 运行）：FPU 上下文切换回归——父子进程并发 f64
+  演算，位级比对
+
+```bash
+zig build test             # 宿主机单测：光栅化逐像素断言等 12 例
+python3 scripts/glishot.py # 无头视觉回归：GL 窗口两帧差异 + 场景截图
+```
+
+详见 [docs/gl.md](docs/gl.md)。
 
 ## 目录结构（源码导读顺序 = 推荐学习顺序）
 
@@ -137,6 +160,10 @@ python3 scripts/guishot.py     # 自动开机→菜单→七应用→拖动，�
 | `userland/*.zig` | Zig 命令 | ls cat echo ps uname sleep hello forkdemo |
 | `userland/wc.c` `cdemo.c` | **C 程序** | 真 Unix wc 移植 + libc 全家桶演示 |
 | `userland/beep.zig` `music.zig` | **音频命令** | AC'97 蜂鸣 / 欢乐颂旋律（zos_beep 505） |
+| `userland/lib/gl.zig` | **miniGL 光栅化器** | OpenGL 1.x 子集：矩阵栈/深度/光照/透视校正纹理；宿主机可单测 |
+| `userland/lib/zglabi.zig` `include/zgl.h` | **GL 的 C ABI** | zgl_* 导出，C 程序（glcube.c）同一光栅化器 |
+| `userland/glview.zig` | **3D 演示** | 纹理立方体/Gouraud 圆环/线框地形三场景（用户态 GUI 应用） |
+| `userland/fputest.zig` | **FPU 回归** | 并发 f64 位级校验——XMM 现场保存的正确性证明 |
 | `scripts/test.py` | 自动化测试 | PTY 驱动 QEMU 串口的集成测试 |
 
 ## 内存布局
@@ -177,6 +204,9 @@ FFFFFFFF80200000 -               内核主体（文本/数据/bss/内核栈）
 | 501 | zos_ping | ZOS 扩展：ICMP ping（返回 RTT） |
 | 502 | zos_http_get | ZOS 扩展：阻塞式 DNS+TCP+HTTP GET |
 | 503 | zos_net_info | ZOS 扩展：网络配置（ifconfig 用） |
+| 505 | zos_beep | ZOS 扩展：AC'97 正弦蜂鸣（beep/music 用） |
+| 510-514 | win_create/present/poll/wait/color | ZOS 窗口服务：共享表面 + 事件队列（用户态 GUI 应用） |
+| 515 | win_fmt | ZOS 窗口服务：帧缓冲像素格式移位（miniGL 打包像素用） |
 
 ## 网络栈
 
@@ -304,6 +334,8 @@ Zig 程序与 C 程序可以互相 fork/exec，共存于同一个 initrd。
 7. **SYSCALL/SYSRET**：把 int 0x80 换成专用指令（MSR STAR/LSTAR + swapgs），
    比较两者陷入路径的开销。
 8. **多核（SMP）**：AP 启动 + per-CPU 运行队列 + 自旋锁（大工程，毕业设计级）。
+9. **miniGL 扩展**：双线性纹理过滤 / alpha 混合 / top-left 填充规则
+   （docs/gl.md 的"扩展练习"有完整清单与提示）。
 
 ## 已知限制（教学取舍）
 
@@ -320,6 +352,7 @@ Zig 程序与 C 程序可以互相 fork/exec，共存于同一个 initrd。
 zig build              # 只编译内核 + 用户程序
 zig build iso          # 制作 build/zos.iso
 zig build run          # 构建并启动 QEMU（无头串口模式）
+zig build test         # 宿主机单测（miniGL 光栅化逐像素断言等）
 zig build test-run     # （等价 python3 scripts/test.py）
 objdump -d zig-out/bin/zos-kernel.elf | less   # 看内核反汇编
 tar -tf build/initrd.tar                        # 看 initrd 内容

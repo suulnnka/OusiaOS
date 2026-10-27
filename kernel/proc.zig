@@ -56,10 +56,12 @@ extern const kernel_stack_top: u8; // 链接脚本：主内核栈（idle 用）
 pub const State = enum {
     unused,
     runnable, // 就绪
-    running, // 正在 CPU 上
+    running, // 在 CPU 上
     sleeping, // 等待定时器唤醒
+    blocked, // 等待事件（GUI 窗口事件）+ 可选超时
     waiting, // wait4 中
     zombie, // 已退出，等待父进程收尸
+    dying, // 已退出且是孤儿：栈还在用（swtch 未离开），调度器收割后回 unused
 };
 
 /// 上下文切换现场：保存 RSP（其余 callee-saved 压在各自栈上），
@@ -72,7 +74,7 @@ pub const Context = extern struct {
 
 /// SSE 现场默认值：寄存器清零，MXCSR=0x1F80（全部异常屏蔽）。
 pub const default_fpu: [66]u32 = blk: {
-    var a = [_]u32{0} ** 66;
+    var a: [66]u32 = @splat(0);
     a[64] = 0x1F80; // 264 字节布局中的 MXCSR 槽（16*16 字节之后）
     break :blk a;
 };
@@ -91,7 +93,11 @@ pub const Proc = struct {
     ppid: u32 = 0,
     exit_code: i32 = 0,
     quantum: u32 = 0,
-    wake_tick: u64 = 0,
+    wake_tick: u64 = 0, // sleeping：绝对唤醒拍；blocked=0 表示无超时
+
+    // ---- 凭证（Linux 风格；fork 继承，setuid 可改）----
+    uid: u32 = 0,
+    gid: u32 = 0,
 
     name: [16]u8 = std.mem.zeroes([16]u8),
 
@@ -319,6 +325,16 @@ pub fn scheduler() noreturn {
     while (true) {
         asm volatile ("sti");
 
+        // 收割已退出的孤儿（GUI 应用）：此刻 CR3 已是内核表、
+        // swtch 已离开它的内核栈，释放页表/内核栈是安全的
+        if (reap_me) |rp| {
+            reap_me = null;
+            freeKStack(rp);
+            vmm.destroyUserSpace(rp.page_map);
+            rp.page_map = 0;
+            rp.state = .unused;
+        }
+
         var found = false;
         for (&procs, 0..) |*p, i| {
             if (p.state != .runnable) continue;
@@ -352,7 +368,37 @@ pub fn onTick() void {
         if (p.state == .sleeping and pit.ticks >= p.wake_tick) {
             p.state = .runnable;
         }
+        // blocked 带超时：到点唤醒（win_wait 的定时闪烁等用途）
+        if (p.state == .blocked and p.wake_tick != 0 and pit.ticks >= p.wake_tick) {
+            p.state = .runnable;
+        }
     }
+}
+
+/// 从 IRQ 上下文唤醒一个 blocked 进程（事件到达时调用）
+pub fn wake(pid: u32) void {
+    for (&procs) |*p| {
+        if (p.pid == pid and p.state == .blocked) p.state = .runnable;
+    }
+}
+
+/// 按名字找进程（GUI 菜单避免重复启动同一应用）
+pub fn findByName(name: []const u8) ?*Proc {
+    for (&procs) |*p| {
+        if (p.state == .unused or p.state == .zombie) continue;
+        const n = std_strlen(&p.name);
+        if (std.mem.eql(u8, p.name[0..n], name)) return p;
+    }
+    return null;
+}
+
+/// 按 pid 找进程（winsys 释放表面时找属主页表用；dying 也算——
+/// 它的地址空间此刻还在）
+pub fn findByPid(pid: u32) ?*Proc {
+    for (&procs) |*p| {
+        if (p.state != .unused and p.pid == pid) return p;
+    }
+    return null;
 }
 
 /// 陷入分发钩子（idt.trapDispatch 每次陷入后调用）
@@ -377,6 +423,12 @@ pub fn trapHook(frame: *TrapFrame) void {
 pub fn yieldCpu() void {
     const p = current() orelse return;
     if (p.state == .running) p.state = .runnable;
+    swtch(&p.ctx, &sched_ctx);
+}
+
+/// 让出 CPU 且保持 blocked（winsys.sysWait 用；唤醒靠 wake/超时）
+pub fn switchAway() void {
+    const p = current() orelse return;
     swtch(&p.ctx, &sched_ctx);
 }
 
@@ -488,12 +540,14 @@ pub fn fork() ?*Proc {
     frame[6] = @intFromPtr(&firstEntry);
     child.ctx.rsp = ctf_addr - 7 * 8;
 
-    // 继承：fd 表、cwd、brk、名字
+    // 继承：fd 表、cwd、brk、名字、凭证
     child.fds = parent.fds;
     child.cwd_buf = parent.cwd_buf;
     child.cwd_len = parent.cwd_len;
     child.brk = parent.brk;
     child.mmap_next = parent.mmap_next;
+    child.uid = parent.uid;
+    child.gid = parent.gid;
     setName(child, parent.name[0..std_strlen(&parent.name)]);
 
     return child;
@@ -511,22 +565,31 @@ fn std_strlen(buf: []const u8) usize {
     return i;
 }
 
+pub const ExecError = error{ NoEnt, Access, BadExe, NoMem };
+
 /// execve：用 path 的 ELF 镜像替换当前进程地址空间。
 /// argv 为参数列表。成功后不再返回（从新程序入口进入用户态）；
-/// 失败返回 false（原镜像保持可用）。
-pub fn execve(path: []const u8, argv: []const []const u8) bool {
-    const p = current() orelse return false;
+/// 失败返回错误（原镜像保持可用）。执行前检查 x 权限位（含路径遍历）。
+pub fn execve(path: []const u8, argv: []const []const u8) ExecError!void {
+    const p = current() orelse return error.BadExe;
 
-    const node = vfs.resolve(path, p.cwd()) orelse return false;
+    const node = vfs.resolveCred(path, p.cwd(), p.uid, p.gid) catch |e| switch (e) {
+        error.Access => return error.Access,
+        error.NoEnt => return error.NoEnt,
+    };
     const inf = vfs.info(node);
-    if (inf.is_dir or inf.is_console) return false;
+    if (inf.is_dir or inf.is_console) return error.BadExe;
+    // exec 权限：x 位（root 旁路）
+    if (!vfs.mayAccess(inf, p.uid, p.gid, .x)) return error.Access;
     const file_node = tarfs.getNode(node - 2);
-    const data = file_node.data orelse return false;
+    const data = file_node.data orelse return error.BadExe;
 
     // 1. 新地址空间 + 加载 ELF
     const new_map = vmm.newKernelSharedPml4();
-    if (new_map == 0) return false;
-    const img = elf.load(new_map, data) orelse return false;
+    if (new_map == 0) return error.NoMem;
+    const img = elf.load(new_map, data) orelse {
+        return error.BadExe;
+    };
 
     // 2. 用户栈 + argv
     var sp = USER_STACK_TOP;
@@ -547,9 +610,9 @@ pub fn execve(path: []const u8, argv: []const []const u8) bool {
     var si: usize = 0;
     while (si < USER_STACK_PAGES) : (si += 1) {
         const va = USER_STACK_TOP - (si + 1) * 4096;
-        const frame = pmm.allocFrame() orelse return false; // 简化：失败时旧空间仍在
+        const frame = pmm.allocFrame() orelse return error.NoMem; // 简化：失败时旧空间仍在
         @memset(@as([*]u8, @ptrFromInt(vmm.physToVirt(frame)))[0..4096], 0);
-        if (!vmm.mapPage(new_map, va, frame, vmm.P | vmm.W | vmm.U)) return false;
+        if (!vmm.mapPage(new_map, va, frame, vmm.P | vmm.W | vmm.U)) return error.NoMem;
     }
 
     // 自栈顶向下：字符串区 → 对齐 → argv 数组 → argc
@@ -623,11 +686,15 @@ fn std_as_usize_bytes(v: usize) [8]u8 {
     return b;
 }
 
-/// exit：进程退出，变成 zombie，唤醒等待中的父进程
+/// exit：进程退出。普通进程变 zombie 等父进程 wait4；内核直启的孤儿
+/// （ppid=0，GUI 应用）挂到 reap_me 由调度器在切走后回收——不能在
+/// 自己还在自己的内核栈/页表上时就释放它们。
 pub fn exit(code: i32) noreturn {
     const p = current() orelse unreachable;
     p.exit_code = code;
-    p.state = .zombie;
+
+    // GUI 窗口等内核资源先行回收（与地址空间无关，安全）
+    @import("winsys.zig").onProcExit(p.pid);
 
     // 子进程移交给 init(pid 1)
     for (&procs) |*c| {
@@ -638,9 +705,19 @@ pub fn exit(code: i32) noreturn {
         if (q.state == .waiting and q.pid == p.ppid) q.state = .runnable;
     }
 
+    if (p.ppid == 0) {
+        // 内核直启的孤儿：标记待收割（调度器 swtch 回来后释放资源）
+        reap_me = p;
+        p.state = .dying; // 占住槽位防止复用，等调度器清
+    } else {
+        p.state = .zombie;
+    }
+
     swtch(&p.ctx, &sched_ctx);
-    unreachable; // zombie 不会被再次调度
+    unreachable; // 不会再被调度
 }
+
+var reap_me: ?*Proc = null;
 
 /// wait4：等待子进程。which=-1 任意子进程；成功把退出码写进 status。
 /// 返回子进程 pid；错误返回负 errno。
@@ -716,6 +793,47 @@ pub fn spawnInit() bool {
     };
 
     return execIntoFresh(p, path);
+}
+
+/// 内核直启一个用户程序（GUI 应用菜单用）：ppid=0 的"孤儿"，退出时
+/// 由调度器收割（见 exit/dying）。可在 IRQ 上下文调用——中断门 IF=0，
+/// 与调度器天然互斥；vfs/elf 都是纯内存操作。
+pub fn spawnKernel(path: []const u8) bool {
+    const slot = allocProcSlot() orelse return false;
+    const p = &procs[slot];
+    p.* = .{};
+    p.pid = allocPid();
+    p.ppid = 0; // 孤儿：exit 走 dying 自收割
+    p.state = .runnable;
+    p.uid = 0; // 系统应用以 root 运行（filer 需要遍历任意目录）
+    p.gid = 0;
+
+    if (!allocKStack(p)) {
+        p.state = .unused;
+        return false;
+    }
+    p.page_map = vmm.newKernelSharedPml4();
+    if (p.page_map == 0) {
+        freeKStack(p);
+        p.state = .unused;
+        return false;
+    }
+    p.cwd_buf[0] = '/';
+    p.cwd_len = 1;
+    // 控制台三件套：GUI 应用也保留串口日志通道（printf 可见，便于调试；
+    // 输出会同时进 GUI 终端镜像——内核本来就只有一条控制台流）
+    p.fds[0] = .{ .used = true, .node = vfs.CONSOLE_NODE };
+    p.fds[1] = .{ .used = true, .node = vfs.CONSOLE_NODE };
+    p.fds[2] = .{ .used = true, .node = vfs.CONSOLE_NODE };
+
+    const ok = execIntoFresh(p, path);
+    if (!ok) {
+        freeKStack(p);
+        vmm.destroyUserSpace(p.page_map);
+        p.page_map = 0;
+        p.state = .unused;
+    }
+    return ok;
 }
 
 /// spawnInit 专用：p 尚无用户空间，加载 path 后从其入口进入。

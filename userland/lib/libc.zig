@@ -18,6 +18,12 @@ const zos = @import("zos.zig");
 // （std 默认 panic 打印器在裸机上自身会崩，吞掉真实错误信息）
 pub const panic = zos.panic;
 
+// miniGL 的 C ABI（zgl.h）：comptime 引用强制分析整个文件——
+// 否则 export fn 会被惰性分析跳过，静态库里没有这些符号
+comptime {
+    _ = @import("zglabi.zig");
+}
+
 // ================= errno =================
 
 export var errno: c_int = 0;

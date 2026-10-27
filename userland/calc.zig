@@ -1,23 +1,23 @@
-//! 计算器 —— Win3.1 calc 复刻（无状态重建型：一切状态就是一个 f64 +
-//! 一个待处理运算符 + 正在键入的数字串）
+//! calc —— 计算器（用户态 GUI 应用）
 //!
-//! 教学要点：
-//!   - 内核里也能用 f64（SSE2 是 x86_64 基线，加减乘除不需要数学库）
-//!   - 浮点显示自己写：整数部分 + 小数 6 位去尾零；溢出/除零 → "Error"
-//!   - 状态机：entry（键入中）↔ acc（累计值）+ pending 运算符；
-//!     连续按运算符实现"链式计算"（12 + 3 + → 显示 15）
+//! f64 四则 + 链式运算 + 退格/取负/CE/C。用户态下用浮点毫无压力——
+//! 内核的陷入/上下文切换都保存 XMM 现场（见 idt.zig / proc.zig），
+//! 这正是"内核态/用户态边界上浮点寄存器归属"的经典教学内容。
 
-const gui = @import("../gui.zig");
+const zos = @import("lib/zos.zig");
+const win = @import("lib/win.zig");
 
-const Rect = gui.Rect;
-const mkRect = gui.mkRect;
-const inRect = gui.inRect;
+comptime {
+    _ = @import("lib/crt0.zig");
+}
 
-const BTN_W: i32 = 34;
-const BTN_H: i32 = 26;
-const GAP: i32 = 6;
+const CW = 184;
+const CH = 217;
+const BTN_W = 34;
+const BTN_H = 26;
+const GAP = 6;
 
-/// 4x5 键阵（经典布局）
+/// 4x5 键阵（E=CE，<=退格，N=取负）
 const KEYS = [5][4]u8{
     .{ 'C', 'E', '<', '/' },
     .{ '7', '8', '9', '*' },
@@ -26,27 +26,21 @@ const KEYS = [5][4]u8{
     .{ '0', '.', 'N', '=' },
 };
 
-var acc: f64 = 0; // 累计值
-var pending: u8 = 0; // 待处理运算符：0 无 / '+' '-' '*' '/'
-var entry: [17]u8 = @splat('0'); // 正在键入的数字串（len 记长度，实际显示 [0..len]）
+var acc: f64 = 0;
+var pending: u8 = 0;
+var entry: [17]u8 = @splat('0');
 var entry_len: usize = 1;
-var fresh: bool = true; // 下一个数字键开始新 entry（刚算完/刚按运算符）
-var is_error: bool = false;
+var fresh = true;
+var is_error = false;
+var dirty = true;
 
-fn displayRect(w: *const gui.Win) Rect {
-    const cr = gui.clientRect(w);
-    return mkRect(cr.x + 8, cr.y + 8, cr.w - 16, 24);
-}
-
-fn keyRect(w: *const gui.Win, row: usize, col: usize) Rect {
-    const cr = gui.clientRect(w);
-    const gx = cr.x + @divTrunc(cr.w - (4 * BTN_W + 3 * GAP), 2);
-    const gy = displayRect(w).y + displayRect(w).h + 8;
-    return mkRect(gx + @as(i32, @intCast(col)) * (BTN_W + GAP), gy + @as(i32, @intCast(row)) * (BTN_H + GAP), BTN_W, BTN_H);
+fn keyRect(row: usize, col: usize) struct { x: i32, y: i32 } {
+    const gx = @divTrunc(CW - (4 * BTN_W + 3 * GAP), 2);
+    const gy = 8 + 24 + 8; // 显示区下
+    return .{ .x = gx + @as(i32, @intCast(col)) * (BTN_W + GAP), .y = gy + @as(i32, @intCast(row)) * (BTN_H + GAP) };
 }
 
 fn entryVal() f64 {
-    // 手写 atof（键入串只会是 [0-9.]* ，不处理指数）
     var v: f64 = 0;
     var dot = false;
     var scale: f64 = 0.1;
@@ -64,10 +58,10 @@ fn entryVal() f64 {
 }
 
 fn isFinite(v: f64) bool {
-    return v == v and v > -1.0e15 and v < 1.0e15; // 排除 NaN/Inf/超显示范围
+    return v == v and v > -1.0e15 and v < 1.0e15;
 }
 
-/// f64 → 字符串：整数部分 + 小数 6 位去尾零（超长返回 null → "Error"）
+/// f64 → 字符串：整数部分 + 小数 6 位去尾零
 fn fmtVal(v: f64, buf: []u8) ?usize {
     if (!isFinite(v)) return null;
     var n: usize = 0;
@@ -80,7 +74,6 @@ fn fmtVal(v: f64, buf: []u8) ?usize {
     }
     const ipart: u64 = @intFromFloat(x);
     const frac = x - @as(f64, @floatFromInt(ipart));
-    // 整数部分
     var tmp: [20]u8 = undefined;
     var tn: usize = 0;
     var iv = ipart;
@@ -99,7 +92,6 @@ fn fmtVal(v: f64, buf: []u8) ?usize {
         buf[n] = tmp[tn];
         n += 1;
     }
-    // 小数部分：四舍五入到 6 位再逐位去零
     if (frac > 0.5e-6) {
         var fr: u64 = @intFromFloat(frac * 1.0e6 + 0.5);
         var digits: [6]u8 = undefined;
@@ -130,7 +122,7 @@ fn apply(a: f64, b: f64, op: u8) f64 {
         '+' => a + b,
         '-' => a - b,
         '*' => a * b,
-        '/' => a / b, // 除零 → Inf → isFinite 拦下 → Error
+        '/' => a / b,
         else => b,
     };
 }
@@ -138,12 +130,11 @@ fn apply(a: f64, b: f64, op: u8) f64 {
 fn pressKey(k: u8) void {
     if (is_error) {
         if (k >= '0' and k <= '9') {
-            // 出错后按数字 = 重新开始
             is_error = false;
             acc = 0;
             pending = 0;
         } else if (k != 'C') {
-            return; // 出错后只接受数字或 C
+            return;
         }
     }
     switch (k) {
@@ -187,7 +178,6 @@ fn pressKey(k: u8) void {
         },
         '=' => {
             if (pending != 0) {
-                // "a + ="（等号前没键入新数）→ 用 acc 自身，与 Win 计算器一致
                 const b: f64 = if (fresh) acc else entryVal();
                 acc = apply(acc, b, pending);
                 if (!isFinite(acc)) {
@@ -198,7 +188,7 @@ fn pressKey(k: u8) void {
             }
             fresh = true;
         },
-        'C' => { // 全清
+        'C' => {
             acc = 0;
             pending = 0;
             entry_len = 1;
@@ -206,12 +196,12 @@ fn pressKey(k: u8) void {
             fresh = true;
             is_error = false;
         },
-        'E' => { // 清当前键入
+        'E' => {
             entry_len = 1;
             entry[0] = '0';
             fresh = true;
         },
-        '<' => { // 退格
+        '<' => {
             if (!fresh and entry_len > 0) {
                 entry_len -= 1;
                 if (entry_len == 0) {
@@ -220,72 +210,91 @@ fn pressKey(k: u8) void {
                 }
             }
         },
-        'N' => { // 取负：作用在"将参与运算"的那个数上
+        'N' => {
             if (fresh) {
                 acc = -acc;
                 if (!isFinite(acc)) is_error = true;
-            } else {
-                if (entry_len > 0 and entry[0] == '-') {
-                    // 键入串一般不带负号（用 N 添加），保守处理：去掉
-                    for (1..entry_len) |i| entry[i - 1] = entry[i];
-                    entry_len -= 1;
-                } else {
-                    if (entry_len + 1 < entry.len) {
-                        var i = entry_len;
-                        while (i > 0) {
-                            i -= 1;
-                            entry[i + 1] = entry[i];
-                        }
-                        entry[0] = '-';
-                        entry_len += 1;
-                    }
+            } else if (entry_len + 1 < entry.len) {
+                var i = entry_len;
+                while (i > 0) {
+                    i -= 1;
+                    entry[i + 1] = entry[i];
                 }
+                entry[0] = '-';
+                entry_len += 1;
             }
         },
         else => {},
     }
+    dirty = true;
 }
 
-pub fn press(w: *const gui.Win, x: i32, y: i32) void {
-    for (KEYS, 0..) |row, ri| {
-        for (row, 0..) |k, ci| {
-            if (inRect(x, y, keyRect(w, ri, ci))) {
+fn press(x: i32, y: i32) void {
+    for (KEYS, 0..) |krow, ri| {
+        for (krow, 0..) |k, ci| {
+            const r = keyRect(ri, ci);
+            if (x >= r.x and y >= r.y and x < r.x + BTN_W and y < r.y + BTN_H) {
                 pressKey(k);
-                gui.addDamage(gui.clientRect(w)); // 显示区必变，整客户区简单重画
                 return;
             }
         }
     }
 }
 
-pub fn paint(w: *const gui.Win) void {
-    // 显示区：右对齐
-    const dr = displayRect(w);
-    gui.fillRect(dr, gui.pal.white);
-    gui.bevel1(dr, false);
+fn draw() void {
+    win.fillRect(0, 0, CW, CH, win.C_CHROME);
+
+    // 显示区
+    const dx = 8;
+    const dy = 8;
+    const dw = CW - 16;
+    win.fillRect(dx, dy, dw, 24, win.C_WHITE);
+    win.bevel(dx, dy, dw, 24, false);
     var buf: [24]u8 = undefined;
-    var text_slice: []const u8 = undefined;
+    var s: []const u8 = undefined;
     if (is_error) {
-        text_slice = "Error";
+        s = "Error";
     } else if (fresh) {
         const n = fmtVal(acc, &buf) orelse 0;
-        text_slice = if (n == 0) "Error" else buf[0..n];
+        s = if (n == 0) "Error" else buf[0..n];
     } else {
-        text_slice = entry[0..entry_len];
+        s = entry[0..entry_len];
     }
-    const tx = dr.x + dr.w - 6 - @as(i32, @intCast(text_slice.len)) * 8;
-    gui.text(tx, dr.y + 4, text_slice, gui.pal.black);
+    win.text(dx + dw - 6 - @as(i32, @intCast(s.len)) * 8, dy + 4, s, win.C_BLACK);
 
-    // 键阵：运算符列藏青底白字，数字白底黑字
-    for (KEYS, 0..) |row, ri| {
-        for (row, 0..) |k, ci| {
-            const r = keyRect(w, ri, ci);
+    // 键阵：首行与运算符列灰底，数字白底
+    for (KEYS, 0..) |krow, ri| {
+        for (krow, 0..) |k, ci| {
+            const r = keyRect(ri, ci);
             const is_op = ci == 3 or ri == 0;
-            const bg: u32 = if (is_op) gui.pal.chrome else gui.pal.white;
-            gui.fillRect(r, bg);
-            gui.bevel1(r, true);
-            const label = [1]u8{k};
-            gui.text(r.x + @divTrunc(BTN_W - 8, 2), r.y + 5, &label, gui.pal.black);
+            win.fillRect(r.x, r.y, BTN_W, BTN_H, if (is_op) win.C_CHROME else win.C_WHITE);
+            win.bevel(r.x, r.y, BTN_W, BTN_H, true);
+            const kk = [1]u8{k};
+            win.text(r.x + @divTrunc(BTN_W - 8, 2), r.y + 5, &kk, win.C_BLACK);
         }
     }
+}
+
+export fn main() i32 {
+    if (!win.create(CW, CH, "Calculator")) return 1;
+    win.initColors();
+
+    var evs: [8]win.Event = undefined;
+    while (true) {
+        if (dirty) {
+            draw();
+            win.present();
+            dirty = false;
+        }
+        const n = win.wait(&evs, 0);
+        for (evs[0..n]) |e| {
+            switch (e.kind) {
+                win.EV_CLOSE => zos.exit(0),
+                win.EV_PRESS => press(e.x, e.y),
+                win.EV_KEY => pressKey(e.code), // 键盘也能按计算器！
+                else => {},
+            }
+        }
+    }
+    return 0;
 }
