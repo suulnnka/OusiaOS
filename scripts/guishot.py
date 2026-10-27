@@ -160,8 +160,16 @@ def open_menu_item(item_y, name):
     print("open:", name)
 
 
-# 菜单条目纵坐标（menuRect.y=347 + 3 + 各项 18px/分隔 5px）
-MENU = {"files": 359, "term": 377, "mine": 395, "about": 418}
+# 菜单条目纵坐标（menuRect.y=293 + 3 起每项 18px、分隔 5px）
+MENU = {
+    "files": 305,
+    "note": 323,
+    "term": 341,
+    "paint": 359,
+    "calc": 377,
+    "mine": 395,
+    "about": 418,
+}
 
 
 def main():
@@ -188,28 +196,50 @@ def main():
         click(60, 94)        # /etc 列表：".." 之后的第 1 个文件 "issue"
         shot("5-files-preview")
 
-        # ---- 终端：镜像串口会话；sendkey 打一条命令 ----
+        # ---- 终端：镜像串口会话；sendkey 打一条命令（必须在记事本之前，
+        #      记事本拿走键盘焦点后按键就不再进 shell 了）----
         open_menu_item(MENU["term"], "Terminal")
         shot("6-term-bootlog")
         type_text("ls\n")
         time.sleep(0.5)
         shot("7-term-ls")
 
+        # ---- 画图：选红色 → 画布上拖一条自由曲线 ----
+        open_menu_item(MENU["paint"], "Paint")
+        shot("8-paint-new")
+        click(75, 80)        # 第 3 个色板 = 红色（2 列 x 8 行，index 2）
+        drag(200, 120, 420, 280)  # 画布内拖动 = 鼠标捕获连续作画
+        shot("9-paint-draw")
+
+        # ---- 计算器：1 + 2 = 3 ----
+        open_menu_item(MENU["calc"], "Calculator")
+        shot("10-calc-new")
+        for (x, y) in [(330, 260), (450, 260), (370, 260), (450, 292)]:
+            click(x, y)      # 1 + 2 =
+        shot("11-calc-3")
+
+        # ---- 记事本：键盘焦点（此刻 sendkey 进的是记事本，不是 shell）----
+        open_menu_item(MENU["note"], "Notepad")
+        shot("12-note-new")
+        type_text("hello zos\nsecond line")
+        time.sleep(0.3)
+        shot("13-note-text")
+
         # ---- 扫雷：翻一格 + 右键插旗 ----
         open_menu_item(MENU["mine"], "Minesweeper")
-        shot("8-mine-new")
+        shot("14-mine-new")
         click(536, 284)      # 棋盘 (4,4)：首次点击保证安全
         time.sleep(0.3)
-        shot("9-mine-open")
+        shot("15-mine-open")
         rightclick(496, 244) # 棋盘 (2,2) 格心：插旗
         time.sleep(0.3)
-        shot("10-mine-flag")
+        shot("16-mine-flag")
 
         # ---- About + 拖拽（原有回归流程） ----
         open_menu_item(MENU["about"], "About ZOS")
-        shot("11-about")
+        shot("17-about")
         drag(320, 152, 400, 260)  # 拖标题栏
-        shot("12-drag")
+        shot("18-drag")
     finally:
         proc.terminate()
         try:

@@ -62,9 +62,19 @@ pub const State = enum {
     zombie, // 已退出，等待父进程收尸
 };
 
-/// 上下文切换现场：只需保存 RSP（其余 callee-saved 压在各自栈上）
+/// 上下文切换现场：保存 RSP（其余 callee-saved 压在各自栈上），
+/// 外加一份 SSE 现场（XMM0-15+MXCSR）——布局与 TrapFrame 的 XMM 区块
+/// 相同，由 swtchImpl 内联保存/恢复。每个执行上下文（进程/调度器）一份。
 pub const Context = extern struct {
     rsp: usize = 0,
+    fpu: [66]u32 = default_fpu,
+};
+
+/// SSE 现场默认值：寄存器清零，MXCSR=0x1F80（全部异常屏蔽）。
+pub const default_fpu: [66]u32 = blk: {
+    var a = [_]u32{0} ** 66;
+    a[64] = 0x1F80; // 264 字节布局中的 MXCSR 槽（16*16 字节之后）
+    break :blk a;
 };
 
 pub const OpenFile = struct {
@@ -151,6 +161,10 @@ fn swtch(old: *Context, new: *Context) void {
 /// 真正的切换体。必须是 naked 函数：若放在普通函数里，编译器序言
 /// (push/sub) 会垫在保存的 RSP 与返回地址之间，恢复路径的 ret 就会
 /// 读到序言的局部区而不是返回地址——这是本内核踩过的真实坑。
+///
+/// rdi/rsi 指向 Context{rsp, fpu[264B]}。FPU 现场与栈一起切换：
+/// 进入时把当前 XMM 存进 old->fpu、从 new->fpu 恢复；被切走后再次
+/// 调度回来时，XMM 已由唤醒方（另一次 swtch）恢复，这里只需弹栈。
 export fn swtchImpl() callconv(.naked) void {
     asm volatile (
         \\pushq %rbp
@@ -159,6 +173,40 @@ export fn swtchImpl() callconv(.naked) void {
         \\pushq %r13
         \\pushq %r14
         \\pushq %r15
+        \\movups %xmm0, 8(%rdi)      # 保存 old->fpu（偏移 8 = rsp 字段之后）
+        \\movups %xmm1, 24(%rdi)
+        \\movups %xmm2, 40(%rdi)
+        \\movups %xmm3, 56(%rdi)
+        \\movups %xmm4, 72(%rdi)
+        \\movups %xmm5, 88(%rdi)
+        \\movups %xmm6, 104(%rdi)
+        \\movups %xmm7, 120(%rdi)
+        \\movups %xmm8, 136(%rdi)
+        \\movups %xmm9, 152(%rdi)
+        \\movups %xmm10, 168(%rdi)
+        \\movups %xmm11, 184(%rdi)
+        \\movups %xmm12, 200(%rdi)
+        \\movups %xmm13, 216(%rdi)
+        \\movups %xmm14, 232(%rdi)
+        \\movups %xmm15, 248(%rdi)
+        \\stmxcsr 264(%rdi)
+        \\movups 8(%rsi), %xmm0      # 恢复 new->fpu
+        \\movups 24(%rsi), %xmm1
+        \\movups 40(%rsi), %xmm2
+        \\movups 56(%rsi), %xmm3
+        \\movups 72(%rsi), %xmm4
+        \\movups 88(%rsi), %xmm5
+        \\movups 104(%rsi), %xmm6
+        \\movups 120(%rsi), %xmm7
+        \\movups 136(%rsi), %xmm8
+        \\movups 152(%rsi), %xmm9
+        \\movups 168(%rsi), %xmm10
+        \\movups 184(%rsi), %xmm11
+        \\movups 200(%rsi), %xmm12
+        \\movups 216(%rsi), %xmm13
+        \\movups 232(%rsi), %xmm14
+        \\movups 248(%rsi), %xmm15
+        \\ldmxcsr 264(%rsi)
         \\movq %rsp, (%rdi)      # old->rsp = 当前栈
         \\movq (%rsi), %rsp      # rsp = new->rsp
         \\popq %r15
@@ -174,7 +222,25 @@ export fn swtchImpl() callconv(.naked) void {
 /// 从 TrapFrame 返回用户态。不返回。
 pub fn userReturn(tf: usize) noreturn {
     asm volatile (
-        \\movq %[f], %rsp         # 栈指向 trapframe
+        \\movq %[f], %rsp         # 栈指向 trapframe（XMM 区块在最低处）
+        \\movups 0(%rsp), %xmm0
+        \\movups 16(%rsp), %xmm1
+        \\movups 32(%rsp), %xmm2
+        \\movups 48(%rsp), %xmm3
+        \\movups 64(%rsp), %xmm4
+        \\movups 80(%rsp), %xmm5
+        \\movups 96(%rsp), %xmm6
+        \\movups 112(%rsp), %xmm7
+        \\movups 128(%rsp), %xmm8
+        \\movups 144(%rsp), %xmm9
+        \\movups 160(%rsp), %xmm10
+        \\movups 176(%rsp), %xmm11
+        \\movups 192(%rsp), %xmm12
+        \\movups 208(%rsp), %xmm13
+        \\movups 224(%rsp), %xmm14
+        \\movups 240(%rsp), %xmm15
+        \\ldmxcsr 256(%rsp)
+        \\addq $264, %rsp
         \\popq %r15
         \\popq %r14
         \\popq %r13
@@ -203,6 +269,24 @@ pub fn userReturn(tf: usize) noreturn {
 /// （不经过普通函数调用，避免 SysV 栈对齐问题）
 fn firstEntry() callconv(.naked) noreturn {
     asm volatile (
+        \\movups 0(%rsp), %xmm0
+        \\movups 16(%rsp), %xmm1
+        \\movups 32(%rsp), %xmm2
+        \\movups 48(%rsp), %xmm3
+        \\movups 64(%rsp), %xmm4
+        \\movups 80(%rsp), %xmm5
+        \\movups 96(%rsp), %xmm6
+        \\movups 112(%rsp), %xmm7
+        \\movups 128(%rsp), %xmm8
+        \\movups 144(%rsp), %xmm9
+        \\movups 160(%rsp), %xmm10
+        \\movups 176(%rsp), %xmm11
+        \\movups 192(%rsp), %xmm12
+        \\movups 208(%rsp), %xmm13
+        \\movups 224(%rsp), %xmm14
+        \\movups 240(%rsp), %xmm15
+        \\ldmxcsr 256(%rsp)
+        \\addq $264, %rsp
         \\popq %r15
         \\popq %r14
         \\popq %r13
@@ -324,33 +408,14 @@ fn allocProcSlot() ?usize {
     return null;
 }
 
-/// 分配进程内核栈（4 页，物理连续分配后用直接映射区拼成虚拟连续）
+/// 分配进程内核栈（4 页物理连续帧，用直接映射区拼成虚拟连续）
+/// 连续性由 pmm.allocContigFrames 保证（逐帧分配会在保留区边界
+/// 跨界硬拼——详见其注释），这里无需再校验。
 fn allocKStack(p: *Proc) bool {
     p.kstack_top = 0;
-    var got: usize = 0;
-    while (got < KSTACK_PAGES) : (got += 1) {
-        const f = pmm.allocFrame() orelse break;
-        p.kstack_frames[got] = f;
-    }
-    if (got < KSTACK_PAGES) {
-        for (0..got) |i| pmm.freeFrame(p.kstack_frames[i]);
-        return false;
-    }
-    // 页帧物理上不必连续——但直接映射区下 vaddr 只与物理地址一一对应，
-    // 因此用【连续的帧号序列】保证内核栈虚拟连续（allocFrame 线性扫描可保证）。
-    // 简单起见按最后一个帧的 vaddr+4096 作为栈顶。
-    const last = p.kstack_frames[KSTACK_PAGES - 1];
-    p.kstack_top = vmm.physToVirt(last) + 4096;
-    // 校验连续性
-    var i: usize = 1;
-    while (i < KSTACK_PAGES) : (i += 1) {
-        if (p.kstack_frames[i] != p.kstack_frames[i - 1] + 4096) {
-            console.kprintf("proc: kstack not contiguous!\n", .{});
-            for (0..KSTACK_PAGES) |j| pmm.freeFrame(p.kstack_frames[j]);
-            p.kstack_top = 0;
-            return false;
-        }
-    }
+    const base = pmm.allocContigFrames(KSTACK_PAGES) orelse return false;
+    for (0..KSTACK_PAGES) |i| p.kstack_frames[i] = base + i * 4096;
+    p.kstack_top = vmm.physToVirt(p.kstack_frames[KSTACK_PAGES - 1]) + 4096;
     return true;
 }
 
@@ -371,6 +436,7 @@ fn setupFirstEntry(p: *Proc, entry: usize, sp: usize) void {
     const tf: *TrapFrame = @ptrFromInt(tf_addr);
 
     tf.* = std.mem.zeroes(TrapFrame);
+    tf.mxcsr = 0x1F80; // SSE 默认：全部浮点异常屏蔽（清零值会开异常）
     tf.rip = entry;
     tf.cs = gdt.SEL_UCODE;
     tf.rflags = 0x202; // IF=1，开中断进用户态

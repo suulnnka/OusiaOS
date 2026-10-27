@@ -79,6 +79,41 @@ pub fn allocFrame() ?usize {
     return null;
 }
 
+/// 分配 n 个【物理连续】帧，返回首帧地址。
+/// 需求方：进程内核栈——直接映射区里 vaddr 与 paddr 一一对应，只有
+/// 帧号连续才能拼出虚拟连续的栈。逐帧 allocFrame 会在保留区边界
+/// （内核↔initrd 的间隙、MMIO 洞）处"跨界硬拼"出不连续的序列——
+/// 真实内核（如 Linux buddy 分配器）用连续阶分配解决，这里用最直观
+/// 的线性扫描：凑齐长度为 n 的连续空闲位段才整体占用。
+pub fn allocContigFrames(n: usize) ?usize {
+    if (n == 0 or n > MAX_FRAMES) return null;
+    var start: usize = 0;
+    var run: usize = 0;
+    var i: usize = 0;
+    while (i < MAX_FRAMES) : (i += 1) {
+        const idx = (next_hint + i) % MAX_FRAMES;
+        const w = idx / 64;
+        const bit: u6 = @intCast(idx % 64);
+        if (bitmap[w] & (@as(u64, 1) << bit) == 0) {
+            if (run == 0) start = idx;
+            run += 1;
+            if (run == n) {
+                var k: usize = 0;
+                while (k < n) : (k += 1) {
+                    const j = (start + k) % MAX_FRAMES;
+                    bitmap[j / 64] |= @as(u64, 1) << @as(u6, @intCast(j % 64));
+                }
+                free_count -= n;
+                next_hint = (start + n) % MAX_FRAMES;
+                return start * FRAME_SIZE;
+            }
+        } else {
+            run = 0; // 连续段被打断，从下一个空闲位重新数
+        }
+    }
+    return null;
+}
+
 pub fn freeFrame(paddr: usize) void {
     const idx = frameIndexOf(paddr);
     const w = idx / 64;

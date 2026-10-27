@@ -27,6 +27,7 @@ const vmm = @import("vmm.zig");
 const console = @import("console.zig");
 const pit = @import("pit.zig");
 const font = @import("font.zig");
+const tty = @import("tty.zig");
 const apps = @import("apps.zig");
 
 pub const SCR_W: i32 = 640;
@@ -69,6 +70,9 @@ var mouse_y: i32 = 200;
 var left_down = false;
 var right_down = false;
 var drag: ?struct { idx: usize, offx: i32, offy: i32 } = null;
+/// 鼠标捕获：左键按下落在哪个窗口的客户区，按住期间的移动就归它
+/// （经典 GUI 捕获语义——画图时划出窗口也继续画）
+var app_capture: ?usize = null;
 
 // 任务栏
 var btn_pressed = false; // ZOS 按钮（菜单打开期间保持按下）
@@ -85,7 +89,7 @@ const SEP_H: i32 = 5;
 const MENU_PAD: i32 = 3;
 
 /// 菜单项动作：关闭菜单后打开对应应用（窗口单例）
-const MenuAction = enum { about, filer, terminal, mine, none };
+const MenuAction = enum { about, filer, terminal, mine, paint, calc, note, none };
 const MenuItem = struct {
     label: []const u8,
     enabled: bool,
@@ -94,7 +98,10 @@ const MenuItem = struct {
 };
 const menu_items = [_]MenuItem{
     .{ .label = "File Manager", .enabled = true, .act = .filer },
+    .{ .label = "Notepad", .enabled = true, .act = .note },
     .{ .label = "Terminal", .enabled = true, .act = .terminal },
+    .{ .label = "Paint", .enabled = true, .act = .paint },
+    .{ .label = "Calculator", .enabled = true, .act = .calc },
     .{ .label = "Minesweeper", .enabled = true, .act = .mine },
     .{ .label = "", .enabled = false, .sep = true },
     .{ .label = "About ZOS...", .enabled = true, .act = .about },
@@ -105,7 +112,7 @@ const menu_items = [_]MenuItem{
 // ---------------- 窗口 ----------------
 
 /// 窗口种类 = 客户区的行为（apps.zig 按它分发绘制与输入）
-pub const WinKind = enum { about, filer, terminal, mine };
+pub const WinKind = enum { about, filer, terminal, mine, paint, calc, note };
 
 pub const Win = struct {
     visible: bool = false,
@@ -125,18 +132,26 @@ pub const Win = struct {
 var windows = [_]Win{
     .{ .kind = .about, .title = "About ZOS", .tb = "About", .w = 292, .h = 150, .home_x = 174, .home_y = 150 },
     .{ .kind = .filer, .title = "File Manager", .tb = "Files", .w = 460, .h = 300, .home_x = 14, .home_y = 18 },
-    .{ .kind = .terminal, .title = "Terminal", .tb = "Terminal", .w = 584, .h = 272, .home_x = 28, .home_y = 52 },
+    .{ .kind = .terminal, .title = "Terminal", .tb = "Term", .w = 584, .h = 272, .home_x = 28, .home_y = 52 },
     .{ .kind = .mine, .title = "Minesweeper", .tb = "Mines", .w = 200, .h = 262, .home_x = 436, .home_y = 120 },
+    .{ .kind = .paint, .title = "Paint", .tb = "Paint", .w = 470, .h = 310, .home_x = 60, .home_y = 26 },
+    .{ .kind = .calc, .title = "Calculator", .tb = "Calc", .w = 190, .h = 248, .home_x = 300, .home_y = 84 },
+    .{ .kind = .note, .title = "Notepad - (untitled)", .tb = "Note", .w = 520, .h = 260, .home_x = 40, .home_y = 60 },
 };
 
 /// z 序：windows 下标的排列，末位 = 最顶层。点击窗口把它的下标挪到末位
-var zorder = [_]usize{ 0, 1, 2, 3 };
+var zorder = [_]usize{ 0, 1, 2, 3, 4, 5, 6 };
 
 pub fn windowByKind(k: WinKind) *Win {
     for (&windows) |*w| {
         if (w.kind == k) return w;
     }
     unreachable; // 每种窗口恰好一个
+}
+
+/// 活动窗口（z 序最顶的可见窗口）的种类——键盘焦点的归属
+pub fn topKind() WinKind {
+    return windows[topVisible()].kind;
 }
 
 /// 提到顶层（重排 zorder，全屏记脏——遮挡关系整体变化）
@@ -195,6 +210,11 @@ pub fn mkRect(x: i32, y: i32, w: i32, h: i32) Rect {
 const SCREEN = mkRect(0, 0, SCR_W, SCR_H);
 var damage = mkRect(0, 0, 0, 0);
 var clip: Rect = SCREEN; // 重绘期间的所有图元都被裁剪到这里
+
+/// 当前裁剪矩形（应用自绘位图时用它跳过脏区外的像素，见 apps/paint.zig）
+pub fn clipRect() Rect {
+    return clip;
+}
 
 pub fn inRect(x: i32, y: i32, r: Rect) bool {
     return x >= r.x and y >= r.y and x < r.x + r.w and y < r.y + r.h;
@@ -336,10 +356,10 @@ fn taskbarRect() Rect {
     return mkRect(0, TB_Y, SCR_W, TASKBAR_H);
 }
 
-/// 第 wi 个窗口的任务栏按钮（ZOS 按钮右侧一排）
+/// 第 wi 个窗口的任务栏按钮（ZOS 按钮右侧一排；7 个正好排到时钟前）
 fn taskBtnRect(wi: usize) Rect {
     const x0 = btnRect().x + btnRect().w + 22;
-    return mkRect(x0 + @as(i32, @intCast(wi)) * 86, TB_Y + 3, 82, TASKBAR_H - 6);
+    return mkRect(x0 + @as(i32, @intCast(wi)) * 66, TB_Y + 3, 64, TASKBAR_H - 6);
 }
 
 fn menuHeight() i32 {
@@ -450,13 +470,14 @@ fn paintMenu() void {
     }
 }
 
-/// 窗口外框（WM 拥有的部分）：边框/标题栏/系统菜单盒/关闭盒
-fn paintWindow(w: *const Win) void {
+/// 窗口外框（WM 拥有的部分）：边框/标题栏/系统菜单盒/关闭盒。
+/// 活动窗口标题栏藏青；非活动窗口灰色（键盘焦点/激活状态的视觉线索）
+fn paintWindow(wi: usize, w: *const Win) void {
     fillRect(winRect(w), pal.chrome);
     bevel2(winRect(w), true);
 
     const tr = titleRect(w);
-    fillRect(tr, pal.navy);
+    fillRect(tr, if (topVisible() == wi) pal.navy else pal.chrome);
 
     // 系统菜单盒（左，横杠图标）——3.1 的装饰，单击无动作
     const sb = sysBoxRect(w);
@@ -545,7 +566,7 @@ pub fn repaint() void {
 
     paintDesktop();
     for (zorder) |wi| {
-        if (windows[wi].visible) paintWindow(&windows[wi]);
+        if (windows[wi].visible) paintWindow(wi, &windows[wi]);
     }
     paintTaskbar();
     if (menu_open) paintMenu();
@@ -595,7 +616,19 @@ pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
     const left = buttons & 1 != 0;
     if (left != left_down) {
         left_down = left;
-        if (left) handlePress(mouse_x, mouse_y) else drag = null;
+        if (left) {
+            handlePress(mouse_x, mouse_y);
+        } else {
+            if (app_capture != null) apps.onRelease();
+            drag = null;
+            app_capture = null;
+        }
+    }
+    // 捕获期间的移动：归按下时命中的窗口（画图连续笔划）
+    if (left_down and drag == null) {
+        if (app_capture) |wi| {
+            apps.onMove(&windows[wi], mouse_x, mouse_y);
+        }
     }
     const right = buttons & 2 != 0;
     if (right != right_down) {
@@ -629,6 +662,9 @@ fn handlePress(x: i32, y: i32) void {
                     .filer => openApp(.filer),
                     .terminal => openApp(.terminal),
                     .mine => openApp(.mine),
+                    .paint => openApp(.paint),
+                    .calc => openApp(.calc),
+                    .note => openApp(.note),
                     .none => {},
                 }
             }
@@ -654,6 +690,7 @@ fn handlePress(x: i32, y: i32) void {
         if (inRect(x, y, titleRect(w)) and !inRect(x, y, sysBoxRect(w))) {
             drag = .{ .idx = wi, .offx = x - w.x, .offy = y - w.y };
         } else if (!inRect(x, y, titleRect(w))) {
+            app_capture = wi; // 按住期间的移动归这个窗口
             apps.onPress(w, x, y); // 客户区：交给应用
         }
         return;
@@ -725,6 +762,18 @@ pub fn onConsoleChar(c: u8) void {
         const w = windowByKind(.terminal);
         if (w.visible) addDamage(clientRect(w));
     }
+}
+
+/// 键盘入口（keyboard.zig 的所有按键都走这里）。
+/// 键盘焦点模型：活动窗口是记事本时按键归它；否则照旧进 tty 行规程
+/// （串口 shell 的回显/控制字符行为完全不变）。0xF0..0xF3 是键盘驱动
+/// 为方向键准备的私有键码，不进 tty（会污染串口行缓冲）。
+pub fn onKey(c: u8) void {
+    if (active and topKind() == .note and windowByKind(.note).visible) {
+        apps.onKey(c);
+        return;
+    }
+    if (c < 0xF0) tty.onInput(c);
 }
 
 fn readCmos(reg: u8) u8 {

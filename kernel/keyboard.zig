@@ -6,7 +6,7 @@
 //!   - 驱动只做"扫描码 → 字符"，行规程（回显、退格、缓冲）在 tty.zig
 
 const serial = @import("serial.zig");
-const tty = @import("tty.zig");
+const gui = @import("gui.zig");
 
 /// 扫描码集合 1 → ASCII（US 布局）；0 表示无映射/不可打印
 const map_normal = [_]u8{
@@ -16,6 +16,7 @@ const map_normal = [_]u8{
     'b',  'n',  'm', ',', '.',  '/', 0,   '*', 0,   ' ', 0,    0,    0,   0,    0,    0,
     0,    0,    0,   0,   0,    0,   0,   0,   0,   0,   0,    0,    0,   0,    0,    0,
     0,    0,    0,   0,   0,    0,   0,   0,   0,   0,   0,    0,    0,   0,    0,    0,
+    0,    0,    0,   0,   0,    0,   0,   0,   0,   0,   0,    0,    0,   0,    0,    0,
 };
 
 const map_shift = [_]u8{
@@ -23,6 +24,7 @@ const map_shift = [_]u8{
     'Q',  'W',  'E', 'R', 'T',  'Y', 'U', 'I', 'O', 'P', '{', '}', '\n', 0,    'A',  'S',
     'D',  'F',  'G', 'H', 'J',  'K', 'L', ':', '"', '~', 0,   '|',  'Z', 'X',  'C',  'V',
     'B',  'N',  'M', '<', '>',  '?', 0,   '*', 0,   ' ', 0,    0,    0,   0,    0,    0,
+    0,    0,    0,   0,   0,    0,   0,   0,   0,   0,   0,    0,    0,   0,    0,    0,
     0,    0,    0,   0,   0,    0,   0,   0,   0,   0,   0,    0,    0,   0,    0,    0,
     0,    0,    0,   0,   0,    0,   0,   0,   0,   0,   0,    0,    0,   0,    0,    0,
 };
@@ -68,14 +70,29 @@ pub fn onInterrupt() void {
         else => {},
     }
 
+    // 方向键 → GUI 私有键码（0xF0..0xF3）：没有 ASCII 映射，且绝不能
+    // 以控制字符身份进 tty（0x11/0x13 是 XON/XOFF，串口终端会炸流控）
+    const arrow: u8 = switch (scancode) {
+        0x48 => 0xF0, // ↑
+        0x50 => 0xF1, // ↓
+        0x4B => 0xF2, // ←
+        0x4D => 0xF3, // →
+        else => 0,
+    };
+    if (arrow != 0) {
+        gui.onKey(arrow); // gui.onKey：焦点在 GUI 应用才收，否则丢弃
+        return;
+    }
+
     if (scancode >= map_normal.len) return;
     const c: u8 = if (shift_down) map_shift[scancode] else map_normal[scancode];
     if (c == 0) return;
 
     if (ctrl_down) {
         // Ctrl+X → 控制字符（如 Ctrl+C = 0x03）
-        if (c >= 'a' and c <= 'z') tty.onInput(c - 'a' + 1);
+        if (c >= 'a' and c <= 'z') gui.onKey(c - 'a' + 1);
         return;
     }
-    tty.onInput(c);
+    // 统一入口：gui.onKey 决定按键归 GUI 焦点应用还是串口 shell 的 tty
+    gui.onKey(c);
 }
