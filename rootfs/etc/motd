@@ -1,0 +1,4 @@
+Welcome to ZOS -- a tiny x86_64 teaching kernel written in Zig!
+
+Networking: ifconfig | ping 10.0.2.2 | curl http://10.0.2.2:8099/hello.txt
+(10.0.2.2 is the host loopback via QEMU user-mode networking)

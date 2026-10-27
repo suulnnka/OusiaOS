@@ -1,0 +1,694 @@
+//! 进程管理与调度（PCB / 上下文切换 / fork / execve / wait / exit）
+//!
+//! 教学要点：
+//!   - 进程 = 地址空间(页表) + 内核栈 + trapframe + 状态
+//!   - 上下文切换 swtch 只保存 RSP：callee-saved 寄存器压在栈上，
+//!     换栈即换进程，"栈就是进程的魂"
+//!   - 用户态进入：iretq 弹出 TrapFrame（RIP/CS/RFLAGS/RSP/SS）
+//!   - 首次运行：内核栈顶放 forkret 返回地址，swtch 的 ret 弹出它
+//!   - 调度：时间片轮转（QUANTUM 个 tick），时钟中断里抢占
+//!
+//! 各协作方：
+//!   idt.trapDispatch → trapHook（记录 tf、按时间片抢占）
+//!   pit.onTick      → onTick（唤醒睡眠进程）
+//!   syscall         → fork/exec/sleep/exit/wait4
+
+const std = @import("std");
+const console = @import("console.zig");
+const gdt = @import("gdt.zig");
+const vmm = @import("vmm.zig");
+const pmm = @import("pmm.zig");
+const pit = @import("pit.zig");
+const idt = @import("idt.zig");
+const vfs = @import("vfs.zig");
+const tarfs = @import("tarfs.zig");
+const elf = @import("elf.zig");
+
+const TrapFrame = idt.TrapFrame;
+
+pub const QUANTUM = 2; // 时间片 = 2 tick (20ms)
+pub const MAX_PROCS = 16;
+pub const KSTACK_PAGES = 4; // 每进程内核栈 16KB
+
+/// 用户栈：16 页放在用户空间最高端
+pub const USER_STACK_TOP: usize = 0x0000_7FFF_FFFF_F000;
+pub const USER_STACK_PAGES = 32; // 初始 128KB
+pub const USER_STACK_LIMIT: usize = 8 * 1024 * 1024; // 自动增长上限 8MB
+
+/// 用户栈缺页时按需扩栈（在 #PF 处理中调用）。
+/// 命中范围 [栈顶-上限, 栈顶) 且该页未映射 → 补一页，返回 true 重试指令。
+pub fn growStackOnFault(cr2: usize) bool {
+    const p = current() orelse return false;
+    if (cr2 >= USER_STACK_TOP or cr2 < USER_STACK_TOP - USER_STACK_LIMIT) return false;
+    const va = cr2 & ~@as(usize, 0xFFF);
+    if (vmm.isMapped(p.page_map, va)) return false;
+    const frame = pmm.allocFrame() orelse return false;
+    @memset(@as([*]u8, @ptrFromInt(vmm.physToVirt(frame)))[0..4096], 0);
+    if (!vmm.mapPage(p.page_map, va, frame, vmm.P | vmm.W | vmm.U)) {
+        pmm.freeFrame(frame);
+        return false;
+    }
+    return true;
+}
+
+extern const kernel_stack_top: u8; // 链接脚本：主内核栈（idle 用）
+
+pub const State = enum {
+    unused,
+    runnable, // 就绪
+    running, // 正在 CPU 上
+    sleeping, // 等待定时器唤醒
+    waiting, // wait4 中
+    zombie, // 已退出，等待父进程收尸
+};
+
+/// 上下文切换现场：只需保存 RSP（其余 callee-saved 压在各自栈上）
+pub const Context = extern struct {
+    rsp: usize = 0,
+};
+
+pub const OpenFile = struct {
+    used: bool = false,
+    node: usize = 0, // vfs 节点号
+    pos: u64 = 0, // 读写位置
+};
+
+pub const MAX_FD = 16;
+
+pub const Proc = struct {
+    state: State = .unused,
+    pid: u32 = 0,
+    ppid: u32 = 0,
+    exit_code: i32 = 0,
+    quantum: u32 = 0,
+    wake_tick: u64 = 0,
+
+    name: [16]u8 = std.mem.zeroes([16]u8),
+
+    page_map: usize = 0, // 用户 PML4 物理地址
+
+    kstack_frames: [KSTACK_PAGES]usize = std.mem.zeroes([KSTACK_PAGES]usize),
+    kstack_top: usize = 0, // 内核栈顶（虚拟）
+
+    ctx: Context = .{}, // swtch 现场
+    tf: *TrapFrame = undefined, // 最近一次陷入的帧（fork 用）
+
+    brk: usize = 0, // 程序断点
+    mmap_next: usize = 0x0000_5000_0000_0000, // mmap 分配游标
+
+    fds: [MAX_FD]OpenFile = std.mem.zeroes([MAX_FD]OpenFile),
+    cwd_buf: [256]u8 = std.mem.zeroes([256]u8),
+    cwd_len: usize = 1,
+
+    pub fn cwd(self: *const Proc) []const u8 {
+        return self.cwd_buf[0..self.cwd_len];
+    }
+};
+
+var procs: [MAX_PROCS]Proc = undefined;
+
+/// 供 psinfo 系统调用只读访问
+pub fn procsExported() []const Proc {
+    return &procs;
+}
+var current_idx: ?usize = null;
+var sched_ctx: Context = .{}; // 调度器上下文
+var next_pid: u32 = 1;
+
+pub fn current() ?*Proc {
+    if (current_idx) |i| return &procs[i];
+    return null;
+}
+
+pub fn init() void {
+    for (&procs) |*p| p.* = .{};
+
+    pit.tick_hook = &onTick;
+    idt.dispatch_hook = &trapHook;
+    gdt.setKernelStack(@intFromPtr(&kernel_stack_top));
+    // tty.read 在调度器就绪后改用 yield 等待
+    @import("tty.zig").setSchedulerReady();
+}
+
+// ================= 上下文切换 =================
+
+/// swtch(old, new)：保存 old->rsp，加载 new->rsp 并恢复寄存器。
+/// 控制流：切换后从"新上下文"上次保存的返回地址继续；
+/// 旧栈帧原封不动留在旧栈上，等下次切回时恢复。
+fn swtch(old: *Context, new: *Context) void {
+    asm volatile (
+        \\movq %[o], %%rdi
+        \\movq %[n], %%rsi
+        \\callq swtchImpl
+        :
+        : [o] "r" (old),
+          [n] "r" (new),
+        : .{ .rdi = true, .rsi = true, .rbp = true, .rbx = true,
+            .r12 = true, .r13 = true, .r14 = true, .r15 = true,
+            .memory = true });
+}
+
+/// 真正的切换体。必须是 naked 函数：若放在普通函数里，编译器序言
+/// (push/sub) 会垫在保存的 RSP 与返回地址之间，恢复路径的 ret 就会
+/// 读到序言的局部区而不是返回地址——这是本内核踩过的真实坑。
+export fn swtchImpl() callconv(.naked) void {
+    asm volatile (
+        \\pushq %rbp
+        \\pushq %rbx
+        \\pushq %r12
+        \\pushq %r13
+        \\pushq %r14
+        \\pushq %r15
+        \\movq %rsp, (%rdi)      # old->rsp = 当前栈
+        \\movq (%rsi), %rsp      # rsp = new->rsp
+        \\popq %r15
+        \\popq %r14
+        \\popq %r13
+        \\popq %r12
+        \\popq %rbx
+        \\popq %rbp
+        \\ret                    # 弹出新上下文保存的返回地址
+    );
+}
+
+/// 从 TrapFrame 返回用户态。不返回。
+pub fn userReturn(tf: usize) noreturn {
+    asm volatile (
+        \\movq %[f], %rsp         # 栈指向 trapframe
+        \\popq %r15
+        \\popq %r14
+        \\popq %r13
+        \\popq %r12
+        \\popq %rbp
+        \\popq %rbx
+        \\popq %r11
+        \\popq %r10
+        \\popq %r9
+        \\popq %r8
+        \\popq %rax
+        \\popq %rcx
+        \\popq %rdx
+        \\popq %rsi
+        \\popq %rdi
+        \\addq $16, %rsp         # 跳过 intno + errcode
+        \\iretq                  # 弹出 rip/cs/rflags/rsp/ss → 用户态
+        :
+        : [f] "{rdi}" (tf),
+        : .{ .memory = true });
+    unreachable;
+}
+
+/// 新进程的第一次执行入口（swtch 的 ret 弹到这里）。
+/// 此时 rsp 正好指向内核栈顶的 TrapFrame——直接恢复现场进入用户态。
+/// （不经过普通函数调用，避免 SysV 栈对齐问题）
+fn firstEntry() callconv(.naked) noreturn {
+    asm volatile (
+        \\popq %r15
+        \\popq %r14
+        \\popq %r13
+        \\popq %r12
+        \\popq %rbp
+        \\popq %rbx
+        \\popq %r11
+        \\popq %r10
+        \\popq %r9
+        \\popq %r8
+        \\popq %rax
+        \\popq %rcx
+        \\popq %rdx
+        \\popq %rsi
+        \\popq %rdi
+        \\addq $16, %rsp
+        \\iretq
+    );
+}
+
+// ================= 调度器 =================
+
+/// 主调度循环（在 idle 内核栈上运行，永不返回）
+///
+/// 中断纪律（教学重点）：
+///   - 扫描/idle 阶段开中断——时钟必须能打断，否则永远无法抢占；
+///     swtch 可能从关中断的陷入上下文切入，所以循环顶部要 sti
+///   - 切换临界区关中断——若在换栈/换页表途中被切走会破坏现场
+pub fn scheduler() noreturn {
+    while (true) {
+        asm volatile ("sti");
+
+        var found = false;
+        for (&procs, 0..) |*p, i| {
+            if (p.state != .runnable) continue;
+            found = true;
+
+            asm volatile ("cli"); // ---- 切换临界区 ----
+            current_idx = i;
+            p.state = .running;
+            p.quantum = 0;
+            gdt.setKernelStack(p.kstack_top);
+            vmm.switchTo(p.page_map);
+            swtch(&sched_ctx, &p.ctx);
+            // —— 回到这里时 p 已让出 CPU（IF=0，可能来自陷入上下文）——
+
+            vmm.switchTo(vmm.kernelPml4());
+            gdt.setKernelStack(@intFromPtr(&kernel_stack_top));
+            current_idx = null;
+            // 循环顶部的 sti 会重新开中断
+        }
+        if (!found) {
+            // 无事可做：开中断并休眠，等下一个时钟/输入事件
+            asm volatile ("sti");
+            asm volatile ("hlt");
+        }
+    }
+}
+
+/// 时钟 tick（PIT 回调，关中断上下文）
+pub fn onTick() void {
+    for (&procs) |*p| {
+        if (p.state == .sleeping and pit.ticks >= p.wake_tick) {
+            p.state = .runnable;
+        }
+    }
+}
+
+/// 陷入分发钩子（idt.trapDispatch 每次陷入后调用）
+pub fn trapHook(frame: *TrapFrame) void {
+    const p = current() orelse return; // idle 上的中断不抢占
+    p.tf = frame; // fork/exec 需要最新现场
+
+    if (p.state != .running) {
+        // sleep()/exit() 已经把状态改掉并主动 swtch 走了，
+        // 走到这里说明是被动了（如 wait 中被信号打断的路径）——直接切走
+        swtch(&p.ctx, &sched_ctx);
+        return;
+    }
+    p.quantum += 1;
+    if (p.quantum >= QUANTUM) {
+        p.quantum = 0;
+        yieldCpu();
+    }
+}
+
+/// 主动让出 CPU（仍保持就绪）
+pub fn yieldCpu() void {
+    const p = current() orelse return;
+    if (p.state == .running) p.state = .runnable;
+    swtch(&p.ctx, &sched_ctx);
+}
+
+/// 睡眠 ms 毫秒
+pub fn sleepMs(ms: u64) void {
+    const p = current() orelse {
+        // 调度器启动前的内核路径：忙等
+        const t = pit.ticks;
+        while (pit.ticks - t < ms / 10 + @intFromBool(ms % 10 != 0)) asm volatile ("hlt");
+        return;
+    };
+    p.state = .sleeping;
+    p.wake_tick = pit.ticks + ms / 10 + @intFromBool(ms % 10 != 0);
+    swtch(&p.ctx, &sched_ctx);
+}
+
+// ================= 进程创建/销毁 =================
+
+fn allocPid() u32 {
+    const pid = next_pid;
+    next_pid += 1;
+    return pid;
+}
+
+fn allocProcSlot() ?usize {
+    for (&procs, 0..) |*p, i| {
+        if (p.state == .unused) return i;
+    }
+    return null;
+}
+
+/// 分配进程内核栈（4 页，物理连续分配后用直接映射区拼成虚拟连续）
+fn allocKStack(p: *Proc) bool {
+    p.kstack_top = 0;
+    var got: usize = 0;
+    while (got < KSTACK_PAGES) : (got += 1) {
+        const f = pmm.allocFrame() orelse break;
+        p.kstack_frames[got] = f;
+    }
+    if (got < KSTACK_PAGES) {
+        for (0..got) |i| pmm.freeFrame(p.kstack_frames[i]);
+        return false;
+    }
+    // 页帧物理上不必连续——但直接映射区下 vaddr 只与物理地址一一对应，
+    // 因此用【连续的帧号序列】保证内核栈虚拟连续（allocFrame 线性扫描可保证）。
+    // 简单起见按最后一个帧的 vaddr+4096 作为栈顶。
+    const last = p.kstack_frames[KSTACK_PAGES - 1];
+    p.kstack_top = vmm.physToVirt(last) + 4096;
+    // 校验连续性
+    var i: usize = 1;
+    while (i < KSTACK_PAGES) : (i += 1) {
+        if (p.kstack_frames[i] != p.kstack_frames[i - 1] + 4096) {
+            console.kprintf("proc: kstack not contiguous!\n", .{});
+            for (0..KSTACK_PAGES) |j| pmm.freeFrame(p.kstack_frames[j]);
+            p.kstack_top = 0;
+            return false;
+        }
+    }
+    return true;
+}
+
+fn freeKStack(p: *Proc) void {
+    for (0..KSTACK_PAGES) |i| {
+        if (p.kstack_frames[i] != 0) {
+            pmm.freeFrame(p.kstack_frames[i]);
+            p.kstack_frames[i] = 0;
+        }
+    }
+    p.kstack_top = 0;
+}
+
+/// 把进程终点设置为"从 tf 进入用户态"：
+/// 内核栈顶放 TrapFrame，其下放 forkret 返回地址。
+fn setupFirstEntry(p: *Proc, entry: usize, sp: usize) void {
+    const tf_addr = p.kstack_top - @sizeOf(TrapFrame);
+    const tf: *TrapFrame = @ptrFromInt(tf_addr);
+
+    tf.* = std.mem.zeroes(TrapFrame);
+    tf.rip = entry;
+    tf.cs = gdt.SEL_UCODE;
+    tf.rflags = 0x202; // IF=1，开中断进用户态
+    tf.rsp = sp;
+    tf.ss = gdt.SEL_UDATA;
+
+    // swtch 恢复序列：pop r15,r14,r13,r12,rbx,rbx,rbp 后 ret
+    // → 新栈需 [6 个寄存器槽][forkret 返回地址] 共 7 个 qword
+    const frame: *[7]usize = @ptrFromInt(tf_addr - 7 * 8);
+    @memset(frame, 0);
+    frame[6] = @intFromPtr(&firstEntry);
+
+    p.tf = tf;
+    p.ctx.rsp = tf_addr - 7 * 8;
+}
+
+// ================= fork / execve / exit / wait =================
+
+/// fork：克隆当前进程。返回子进程 pid；失败返回 null。
+pub fn fork() ?*Proc {
+    const parent = current() orelse return null;
+    const slot = allocProcSlot() orelse return null;
+    const child = &procs[slot];
+    child.* = .{}; // 清零
+    child.pid = allocPid();
+    child.ppid = parent.pid;
+    child.state = .runnable;
+
+    if (!allocKStack(child)) {
+        child.state = .unused;
+        return null;
+    }
+    child.page_map = vmm.cloneUserSpace(parent.page_map);
+    if (child.page_map == 0) {
+        freeKStack(child);
+        child.state = .unused;
+        return null;
+    }
+
+    // 拷贝 trapframe（子进程从 fork 调用点"返回"），rax=0
+    const ctf_addr = child.kstack_top - @sizeOf(TrapFrame);
+    const ctf: *TrapFrame = @ptrFromInt(ctf_addr);
+    ctf.* = parent.tf.*;
+    ctf.rax = 0; // 子进程 fork() 返回 0
+    child.tf = ctf;
+
+    const frame: *[7]usize = @ptrFromInt(ctf_addr - 7 * 8);
+    @memset(frame, 0);
+    frame[6] = @intFromPtr(&firstEntry);
+    child.ctx.rsp = ctf_addr - 7 * 8;
+
+    // 继承：fd 表、cwd、brk、名字
+    child.fds = parent.fds;
+    child.cwd_buf = parent.cwd_buf;
+    child.cwd_len = parent.cwd_len;
+    child.brk = parent.brk;
+    child.mmap_next = parent.mmap_next;
+    setName(child, parent.name[0..std_strlen(&parent.name)]);
+
+    return child;
+}
+
+fn setName(p: *Proc, s: []const u8) void {
+    const n = @min(s.len, p.name.len - 1);
+    @memcpy(p.name[0..n], s[0..n]);
+    p.name[n] = 0;
+}
+
+fn std_strlen(buf: []const u8) usize {
+    var i: usize = 0;
+    while (i < buf.len and buf[i] != 0) i += 1;
+    return i;
+}
+
+/// execve：用 path 的 ELF 镜像替换当前进程地址空间。
+/// argv 为参数列表。成功后不再返回（从新程序入口进入用户态）；
+/// 失败返回 false（原镜像保持可用）。
+pub fn execve(path: []const u8, argv: []const []const u8) bool {
+    const p = current() orelse return false;
+
+    const node = vfs.resolve(path, p.cwd()) orelse return false;
+    const inf = vfs.info(node);
+    if (inf.is_dir or inf.is_console) return false;
+    const file_node = tarfs.getNode(node - 2);
+    const data = file_node.data orelse return false;
+
+    // 1. 新地址空间 + 加载 ELF
+    const new_map = vmm.newKernelSharedPml4();
+    if (new_map == 0) return false;
+    const img = elf.load(new_map, data) orelse return false;
+
+    // 2. 用户栈 + argv
+    var sp = USER_STACK_TOP;
+    var str_area: [2048]u8 = undefined;
+    var str_len: usize = 0;
+    var argc: usize = 0;
+
+    for (argv) |a| {
+        if (argc >= 32 or str_len + a.len + 1 > str_area.len) break;
+        @memcpy(str_area[str_len .. str_len + a.len], a);
+        str_len += a.len;
+        str_area[str_len] = 0;
+        str_len += 1;
+        argc += 1;
+    }
+
+    // 栈页
+    var si: usize = 0;
+    while (si < USER_STACK_PAGES) : (si += 1) {
+        const va = USER_STACK_TOP - (si + 1) * 4096;
+        const frame = pmm.allocFrame() orelse return false; // 简化：失败时旧空间仍在
+        @memset(@as([*]u8, @ptrFromInt(vmm.physToVirt(frame)))[0..4096], 0);
+        if (!vmm.mapPage(new_map, va, frame, vmm.P | vmm.W | vmm.U)) return false;
+    }
+
+    // 自栈顶向下：字符串区 → 对齐 → argv 数组 → argc
+    sp -= (str_len + 15) & ~@as(usize, 15);
+    const str_base = sp;
+    // 把字符串写进用户栈（新地址空间，需经物理页写入）
+    writeUser(new_map, sp, str_area[0..str_len]);
+    sp -= (argc + 2) * 8; // argv 指针 + NULL... 再加 argc 本身
+    sp &= ~@as(usize, 15); // 16 字节对齐
+
+    // argc 槽
+    writeUser(new_map, sp, &std_as_usize_bytes(argc));
+    var ai: usize = 0;
+    while (ai < argc) : (ai += 1) {
+        // 计算第 i 个字符串在用户栈上的地址
+        var off: usize = 0;
+        var k: usize = 0;
+        while (k < ai) : (k += 1) {
+            off += argv[k].len + 1;
+        }
+        const slot = sp + 8 + ai * 8;
+        writeUser(new_map, slot, &std_as_usize_bytes(str_base + off));
+    }
+    // argv[argc] = NULL
+    writeUser(new_map, sp + 8 + argc * 8, &std_as_usize_bytes(0));
+
+    const entry_rsp = sp;
+
+    // 3. 切换到新空间：销毁旧表、安装并立即载入 CR3
+    // （关键：只改 p.page_map 不切 CR3 的话，userReturn 会拿着旧表进用户态）
+    vmm.destroyUserSpace(p.page_map);
+    p.page_map = new_map;
+    vmm.switchTo(new_map);
+    p.brk = img.brk;
+    setName(p, path);
+
+    // 4. 从新入口进入用户态
+    setupFirstEntry(p, img.entry, entry_rsp);
+    gdt.setKernelStack(p.kstack_top);
+    userReturn(@intFromPtr(p.tf));
+}
+
+/// 经由物理页向"非当前 CR3"的用户地址写入字节
+fn writeUser(pml4: usize, vaddr: usize, bytes: []const u8) void {
+    var done: usize = 0;
+    while (done < bytes.len) {
+        const va = (vaddr + done) & ~@as(usize, 0xFFF);
+        const off = vaddr + done - va;
+        const n = @min(4096 - off, bytes.len - done);
+        const pv = elf_userPageVirt(pml4, va);
+        const dst: [*]u8 = @ptrFromInt(pv + off);
+        @memcpy(dst[0..n], bytes[done .. done + n]);
+        done += n;
+    }
+}
+
+fn elf_userPageVirt(pml4: usize, vaddr: usize) usize {
+    var t = vmm.tableOf(pml4);
+    inline for (.{ (vaddr >> 39) & 511, (vaddr >> 30) & 511, (vaddr >> 21) & 511 }) |idx| {
+        t = vmm.tableOf(t[idx] & 0x000F_FFFF_FFFF_F000);
+    }
+    const frame = t[(vaddr >> 12) & 511] & 0x000F_FFFF_FFFF_F000;
+    return vmm.physToVirt(frame);
+}
+
+fn std_as_usize_bytes(v: usize) [8]u8 {
+    var b: [8]u8 = undefined;
+    inline for (0..8) |i| {
+        b[i] = @truncate(v >> @intCast(8 * i));
+    }
+    return b;
+}
+
+/// exit：进程退出，变成 zombie，唤醒等待中的父进程
+pub fn exit(code: i32) noreturn {
+    const p = current() orelse unreachable;
+    p.exit_code = code;
+    p.state = .zombie;
+
+    // 子进程移交给 init(pid 1)
+    for (&procs) |*c| {
+        if (c.state != .unused and c.ppid == p.pid) c.ppid = 1;
+    }
+    // 唤醒父进程（若在 wait）
+    for (&procs) |*q| {
+        if (q.state == .waiting and q.pid == p.ppid) q.state = .runnable;
+    }
+
+    swtch(&p.ctx, &sched_ctx);
+    unreachable; // zombie 不会被再次调度
+}
+
+/// wait4：等待子进程。which=-1 任意子进程；成功把退出码写进 status。
+/// 返回子进程 pid；错误返回负 errno。
+pub fn wait4(which: i32, status: *?i32) isize {
+    const p = current() orelse return -1;
+    while (true) {
+        var has_child = false;
+        for (&procs) |*c| {
+            if (c.state == .unused) continue;
+            if (c.ppid != p.pid) continue;
+            has_child = true;
+            if (which != -1 and @as(i32, @intCast(c.pid)) != which) continue;
+            if (c.state == .zombie) {
+                status.* = c.exit_code;
+                const pid = c.pid;
+                freeKStack(c);
+                vmm.destroyUserSpace(c.page_map);
+                c.page_map = 0;
+                c.state = .unused;
+                return @intCast(pid);
+            }
+        }
+        if (!has_child) return -10; // ECHILD
+        p.state = .waiting;
+        swtch(&p.ctx, &sched_ctx);
+    }
+}
+
+// ================= init 进程 =================
+
+/// 创建第一个用户进程。优先 /bin/sh，其次 /bin/hello。
+pub fn spawnInit() bool {
+    const slot = allocProcSlot() orelse return false;
+    const p = &procs[slot];
+    p.* = .{};
+    p.pid = allocPid();
+    p.ppid = 0;
+    p.state = .runnable;
+
+    if (!allocKStack(p)) {
+        p.state = .unused;
+        return false;
+    }
+    p.page_map = vmm.newKernelSharedPml4();
+    if (p.page_map == 0) {
+        freeKStack(p);
+        p.state = .unused;
+        return false;
+    }
+
+    // 进程 1 基础 fd：0/1/2 = 控制台
+    p.fds[0] = .{ .used = true, .node = vfs.CONSOLE_NODE };
+    p.fds[1] = .{ .used = true, .node = vfs.CONSOLE_NODE };
+    p.fds[2] = .{ .used = true, .node = vfs.CONSOLE_NODE };
+    p.cwd_buf[0] = '/';
+    p.cwd_len = 1;
+
+    // 选择要运行的 init 程序
+    const try_paths = [_][]const u8{ "/bin/sh", "/bin/hello" };
+    var chosen: ?[]const u8 = null;
+    for (try_paths) |tp| {
+        if (vfs.resolve(tp, "/") != null) {
+            chosen = tp;
+            break;
+        }
+    }
+    const path = chosen orelse {
+        console.kprintf("proc: no /bin/sh or /bin/hello in initrd!\n", .{});
+        freeKStack(p);
+        vmm.destroyUserSpace(p.page_map);
+        p.state = .unused;
+        return false;
+    };
+
+    return execIntoFresh(p, path);
+}
+
+/// spawnInit 专用：p 尚无用户空间，加载 path 后从其入口进入。
+/// （与 execve 不同：不替换旧空间、由调度器首次调度时进入用户态）
+fn execIntoFresh(p: *Proc, path: []const u8) bool {
+    const node = vfs.resolve(path, "/") orelse return false;
+    const inf = vfs.info(node);
+    if (inf.is_dir or inf.is_console) return false;
+    const file_node = tarfs.getNode(node - 2);
+    const data = file_node.data orelse return false;
+
+    const img = elf.load(p.page_map, data) orelse return false;
+
+    // 用户栈
+    var si: usize = 0;
+    while (si < USER_STACK_PAGES) : (si += 1) {
+        const va = USER_STACK_TOP - (si + 1) * 4096;
+        const frame = pmm.allocFrame() orelse return false;
+        @memset(@as([*]u8, @ptrFromInt(vmm.physToVirt(frame)))[0..4096], 0);
+        if (!vmm.mapPage(p.page_map, va, frame, vmm.P | vmm.W | vmm.U)) return false;
+    }
+
+    // argv[0] = path
+    var str_area: [256]u8 = undefined;
+    const n = @min(path.len, str_area.len);
+    @memcpy(str_area[0..n], path[0..n]);
+    str_area[n] = 0;
+    var sp = USER_STACK_TOP - ((n + 1 + 15) & ~@as(usize, 15));
+    const str_base = sp;
+    writeUser(p.page_map, sp, str_area[0 .. n + 1]);
+
+    sp -= 24; // [argc][argv0][NULL]
+    sp &= ~@as(usize, 15);
+    writeUser(p.page_map, sp, &std_as_usize_bytes(1));
+    writeUser(p.page_map, sp + 8, &std_as_usize_bytes(str_base));
+    writeUser(p.page_map, sp + 16, &std_as_usize_bytes(0));
+
+    p.brk = img.brk;
+    setName(p, path);
+    setupFirstEntry(p, img.entry, sp);
+    return true;
+}
