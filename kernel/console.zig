@@ -8,6 +8,7 @@
 //! 串口则原样输出（支持 UTF-8）。
 
 const serial = @import("serial.zig");
+const gui = @import("gui.zig");
 
 const VGA_PHYS = 0xB8000;
 const KERNEL_VIRT_BASE: usize = 0xFFFF_FFFF_8000_0000;
@@ -45,6 +46,9 @@ pub fn clear() void {
 pub fn putChar(c: u8) void {
     serial.writeByte(c); // 串口通道（日志/无头测试）
     if (!graphical) putVga(if (c >= 0x80) '?' else c);
+    // GUI 终端镜像（第三条通道）：图形模式下 GUI 的 Terminal 窗口显示
+    // 与串口完全同源的字节流；gui 未激活时该调用只入环形缓冲，零副作用
+    gui.onConsoleChar(c);
 }
 
 fn putVga(c: u8) void {

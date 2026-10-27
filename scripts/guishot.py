@@ -130,11 +130,38 @@ def click(x, y):
     hmp("mouse_button 0", 0.2)
 
 
+def rightclick(x, y):
+    mouse_goto(x, y)
+    # HMP mouse_button 是 PS/2 位序：1=左 2=右 4=中（注意不是 1/2/4=L/M/R）
+    hmp("mouse_button 2", 0.1)
+    hmp("mouse_button 0", 0.2)
+
+
 def drag(x0, y0, x1, y1):
     mouse_goto(x0, y0)
     hmp("mouse_button 1", 0.1)
     mouse_goto(x1, y1)
     hmp("mouse_button 0", 0.2)
+
+
+# HMP sendkey 的键名与 ASCII 不同：空格=spc 回车=ret 斜杠=slash 减号=minus
+KEYMAP = {" ": "spc", "\n": "ret", "/": "slash", "-": "minus", ".": "dot"}
+
+
+def type_text(s):
+    for ch in s:
+        hmp("sendkey %s" % KEYMAP.get(ch, ch), 0.08)
+
+
+def open_menu_item(item_y, name):
+    click(30, 466)           # ZOS 按钮
+    click(40, item_y)        # 菜单项（gui.zig menuRect 的条目纵坐标）
+    time.sleep(0.3)
+    print("open:", name)
+
+
+# 菜单条目纵坐标（menuRect.y=347 + 3 + 各项 18px/分隔 5px）
+MENU = {"files": 359, "term": 377, "mine": 395, "about": 418}
 
 
 def main():
@@ -151,10 +178,38 @@ def main():
         shot("1-hover-button")
         click(30, 466)
         shot("2-menu")
-        click(40, 414)  # 菜单第一项 About ZOS
-        shot("3-about")
+        click(320, 200)       # 点桌面收起菜单（否则 open_menu_item 的第一下会变成关菜单）
+
+        # ---- 文件浏览器：根目录 → /etc → 预览 issue ----
+        open_menu_item(MENU["files"], "File Manager")
+        shot("3-files-root")
+        click(60, 110)       # 根列表第 3 行 "etc"（bin/dev/etc 三个目录排前）
+        shot("4-files-etc")
+        click(60, 94)        # /etc 列表：".." 之后的第 1 个文件 "issue"
+        shot("5-files-preview")
+
+        # ---- 终端：镜像串口会话；sendkey 打一条命令 ----
+        open_menu_item(MENU["term"], "Terminal")
+        shot("6-term-bootlog")
+        type_text("ls\n")
+        time.sleep(0.5)
+        shot("7-term-ls")
+
+        # ---- 扫雷：翻一格 + 右键插旗 ----
+        open_menu_item(MENU["mine"], "Minesweeper")
+        shot("8-mine-new")
+        click(536, 284)      # 棋盘 (4,4)：首次点击保证安全
+        time.sleep(0.3)
+        shot("9-mine-open")
+        rightclick(496, 244) # 棋盘 (2,2) 格心：插旗
+        time.sleep(0.3)
+        shot("10-mine-flag")
+
+        # ---- About + 拖拽（原有回归流程） ----
+        open_menu_item(MENU["about"], "About ZOS")
+        shot("11-about")
         drag(320, 152, 400, 260)  # 拖标题栏
-        shot("4-drag")
+        shot("12-drag")
     finally:
         proc.terminate()
         try:

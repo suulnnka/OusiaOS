@@ -1,4 +1,4 @@
-//! ZOS 图形子系统：合成器（compositor）+ Win3.1 风格桌面/任务栏
+//! ZOS 图形子系统：合成器（compositor）+ Win3.1 风格桌面/任务栏/窗口管理
 //!
 //! 教学要点：
 //!   - 图形模式由 GRUB 设置（grub.cfg 的 gfxpayload=640x480x32），
@@ -9,9 +9,15 @@
 //!     重画两个 16x16 的小区域，而不是整屏 1.2MB
 //!   - 图层自底向上：桌面 → 窗口列表 → 任务栏 → 弹出菜单 → 鼠标光标。
 //!     光标是普通 sprite 层，与别的层统一参与合成，遮挡自动正确
-//!   - 线程模型：全部 GUI 状态只在【中断上下文】触碰（IRQ12 鼠标驱动
-//!     状态变化即重绘、IRQ0 时钟驱动秒针刷新），彼此不会嵌套（中断门
-//!     自动关 IF），因此无需任何锁
+//!   - 窗口管理 vs 应用：本文件是"窗口管理器"（外框/标题栏/关闭盒/
+//!     拖拽/z 序提升/任务栏按钮/开始菜单），客户区画法和点击行为在
+//!     apps.zig（文件浏览器/终端镜像/扫雷/About）
+//!   - z 序 = zorder 置换数组（windows 下标的一个排列）；点击窗口
+//!     先提到顶端再分发事件，paint 与命中测试都沿 zorder 遍历
+//!   - 线程模型：repaint 只在【中断上下文】跑（IRQ12 鼠标 / IRQ0 时钟），
+//!     中断门自动关 IF，天然互斥、无需锁。唯一的跨上下文共享是
+//!     addDamage（终端镜像来自进程上下文的 console.putChar）与终端
+//!     行缓冲——前者用关中断的极短临界区，后者按 SPSC 环形缓冲使用
 //!   - Win3.1 视觉语言：灰.chrome + 2px 斜面(bevel)、藏青标题栏、
 //!     白底菜单带投影、系统菜单盒(横杠)/▼ 关闭盒
 
@@ -21,6 +27,7 @@ const vmm = @import("vmm.zig");
 const console = @import("console.zig");
 const pit = @import("pit.zig");
 const font = @import("font.zig");
+const apps = @import("apps.zig");
 
 pub const SCR_W: i32 = 640;
 pub const SCR_H: i32 = 480;
@@ -41,7 +48,7 @@ var rsh: u5 = 0;
 var gsh: u5 = 0;
 var bsh: u5 = 0;
 
-const Pal = struct {
+pub const Pal = struct {
     desktop: u32, // 青绿桌面（老 Windows 的经典底色）
     chrome: u32, // #C0C0C0 控件灰
     white: u32,
@@ -50,9 +57,9 @@ const Pal = struct {
     shadow: u32, // #808080
     ltf: u32, // #DFDFDF 亮面
 };
-var pal: Pal = undefined;
+pub var pal: Pal = undefined;
 
-inline fn px(r: u8, g: u8, b: u8) u32 {
+pub inline fn px(r: u8, g: u8, b: u8) u32 {
     return (@as(u32, r) << rsh) | (@as(u32, g) << gsh) | (@as(u32, b) << bsh);
 }
 
@@ -60,6 +67,7 @@ inline fn px(r: u8, g: u8, b: u8) u32 {
 var mouse_x: i32 = 300;
 var mouse_y: i32 = 200;
 var left_down = false;
+var right_down = false;
 var drag: ?struct { idx: usize, offx: i32, offy: i32 } = null;
 
 // 任务栏
@@ -67,35 +75,120 @@ var btn_pressed = false; // ZOS 按钮（菜单打开期间保持按下）
 var clock_buf: [5]u8 = "00:00".*;
 var last_clock: [5]u8 = "00:00".*;
 
-// 弹出菜单
+// ---------------- 开始菜单 ----------------
+
 var menu_open = false;
 var menu_hover: i8 = -1;
-const MENU_W: i32 = 132;
+const MENU_W: i32 = 148;
 const ITEM_H: i32 = 18;
 const SEP_H: i32 = 5;
 const MENU_PAD: i32 = 3;
-const MenuItem = struct { label: []const u8, enabled: bool, sep: bool = false };
+
+/// 菜单项动作：关闭菜单后打开对应应用（窗口单例）
+const MenuAction = enum { about, filer, terminal, mine, none };
+const MenuItem = struct {
+    label: []const u8,
+    enabled: bool,
+    sep: bool = false,
+    act: MenuAction = .none,
+};
 const menu_items = [_]MenuItem{
-    .{ .label = "About ZOS...", .enabled = true },
+    .{ .label = "File Manager", .enabled = true, .act = .filer },
+    .{ .label = "Terminal", .enabled = true, .act = .terminal },
+    .{ .label = "Minesweeper", .enabled = true, .act = .mine },
+    .{ .label = "", .enabled = false, .sep = true },
+    .{ .label = "About ZOS...", .enabled = true, .act = .about },
     .{ .label = "", .enabled = false, .sep = true },
     .{ .label = "Exit GUI", .enabled = false }, // 教学演示：置灰项的画法
 };
 
-// 窗口列表（z 序 = 数组顺序，自底向上）
-const Win = struct {
+// ---------------- 窗口 ----------------
+
+/// 窗口种类 = 客户区的行为（apps.zig 按它分发绘制与输入）
+pub const WinKind = enum { about, filer, terminal, mine };
+
+pub const Win = struct {
     visible: bool = false,
+    opened: bool = false, // 打开过（任务栏按钮跟着出现，最小化也不消失）
     x: i32 = 0,
     y: i32 = 0,
     w: i32 = 292,
     h: i32 = 150,
+    kind: WinKind = .about,
+    title: []const u8 = "",
+    tb: []const u8 = "", // 任务栏按钮短标签
+    home_x: i32 = 0, // 每次打开时回归的默认位置
+    home_y: i32 = 0,
 };
-var windows = [_]Win{ .{}, .{}, .{}, .{} }; // [0] = About 对话框，其余预留
+
+/// 窗口表：每类应用一个单例窗口（下标恒定，drag/任务栏都引用它）
+var windows = [_]Win{
+    .{ .kind = .about, .title = "About ZOS", .tb = "About", .w = 292, .h = 150, .home_x = 174, .home_y = 150 },
+    .{ .kind = .filer, .title = "File Manager", .tb = "Files", .w = 460, .h = 300, .home_x = 14, .home_y = 18 },
+    .{ .kind = .terminal, .title = "Terminal", .tb = "Terminal", .w = 584, .h = 272, .home_x = 28, .home_y = 52 },
+    .{ .kind = .mine, .title = "Minesweeper", .tb = "Mines", .w = 200, .h = 262, .home_x = 436, .home_y = 120 },
+};
+
+/// z 序：windows 下标的排列，末位 = 最顶层。点击窗口把它的下标挪到末位
+var zorder = [_]usize{ 0, 1, 2, 3 };
+
+pub fn windowByKind(k: WinKind) *Win {
+    for (&windows) |*w| {
+        if (w.kind == k) return w;
+    }
+    unreachable; // 每种窗口恰好一个
+}
+
+/// 提到顶层（重排 zorder，全屏记脏——遮挡关系整体变化）
+fn raiseWindow(wi: usize) void {
+    var i: usize = 0;
+    while (i < zorder.len and zorder[i] != wi) i += 1;
+    if (i >= zorder.len - 1) return; // 已在顶层
+    while (i < zorder.len - 1) : (i += 1) zorder[i] = zorder[i + 1];
+    zorder[zorder.len - 1] = wi;
+    addDamage(SCREEN);
+}
+
+/// 最顶层可见窗口的下标（活动窗口）
+fn topVisible() usize {
+    var i = zorder.len;
+    while (i > 0) {
+        i -= 1;
+        if (windows[zorder[i]].visible) return zorder[i];
+    }
+    return 0;
+}
+
+fn showWindow(wi: usize) void {
+    const w = &windows[wi];
+    w.opened = true;
+    w.visible = true;
+    apps.onOpen(w); // 应用获知被打开（文件浏览器首次列根目录）
+    raiseWindow(wi);
+}
+
+pub fn closeWin(w: *Win) void {
+    addDamage(winRect(w));
+    w.visible = false;
+    addDamage(taskbarRect());
+}
+
+/// 开始菜单 / 任务栏按钮的入口
+fn openApp(k: WinKind) void {
+    const w = windowByKind(k);
+    addDamage(winRect(w)); // 旧位置（若可见）
+    w.x = w.home_x;
+    w.y = w.home_y;
+    var wi: usize = 0;
+    while (windows[wi].kind != k) wi += 1;
+    showWindow(wi);
+}
 
 // ---------------- 矩形与脏区 ----------------
 
-const Rect = struct { x: i32, y: i32, w: i32, h: i32 };
+pub const Rect = struct { x: i32, y: i32, w: i32, h: i32 };
 
-fn mkRect(x: i32, y: i32, w: i32, h: i32) Rect {
+pub fn mkRect(x: i32, y: i32, w: i32, h: i32) Rect {
     return .{ .x = x, .y = y, .w = w, .h = h };
 }
 
@@ -103,7 +196,7 @@ const SCREEN = mkRect(0, 0, SCR_W, SCR_H);
 var damage = mkRect(0, 0, 0, 0);
 var clip: Rect = SCREEN; // 重绘期间的所有图元都被裁剪到这里
 
-fn inRect(x: i32, y: i32, r: Rect) bool {
+pub fn inRect(x: i32, y: i32, r: Rect) bool {
     return x >= r.x and y >= r.y and x < r.x + r.w and y < r.y + r.h;
 }
 
@@ -115,30 +208,46 @@ fn clampRect(r: Rect) Rect {
     return mkRect(x0, y0, @max(x1 - x0, 0), @max(y1 - y0, 0));
 }
 
-/// 记脏区：合并为包围盒（教学取舍：多个分散小脏区会合并成大矩形，
-/// 正确性优先；更精细的做法是脏区列表）
-fn addDamage(r: Rect) void {
-    const c = clampRect(r);
-    if (c.w <= 0 or c.h <= 0) return;
-    if (damage.w <= 0 or damage.h <= 0) {
-        damage = c;
-        return;
-    }
-    const x0 = @min(damage.x, c.x);
-    const y0 = @min(damage.y, c.y);
-    const x1 = @max(damage.x + damage.w, c.x + c.w);
-    const y1 = @max(damage.y + damage.h, c.y + c.h);
-    damage = mkRect(x0, y0, x1 - x0, y1 - y0);
+/// 读 RFLAGS（bit9 = IF 中断标志）
+pub inline fn irqSave() u64 {
+    return asm ("pushfq; popq %[v]" : [v] "=r" (-> u64));
 }
 
-// ---------------- 绘制原语（全部尊重 clip） ----------------
+pub inline fn irqRestore(flags: u64) void {
+    if (flags & 0x200 != 0) asm volatile ("sti");
+}
 
-fn setPx(x: i32, y: i32, c: u32) void {
+/// 记脏区：合并为包围盒（教学取舍：多个分散小脏区会合并成大矩形，
+/// 正确性优先；更精细的做法是脏区列表）。
+/// 终端镜像可能从【进程上下文】调用（shell printf），与 IRQ0 里的
+/// repaint 存在竞态——用极短的关中断临界区把"读-改-写"做成原子
+/// （IRQ 上下文里 IF 本来就是关的，等价于零开销直通）。
+pub fn addDamage(r: Rect) void {
+    const flags = irqSave();
+    asm volatile ("cli");
+    const c = clampRect(r);
+    if (c.w > 0 and c.h > 0) {
+        if (damage.w <= 0 or damage.h <= 0) {
+            damage = c;
+        } else {
+            const x0 = @min(damage.x, c.x);
+            const y0 = @min(damage.y, c.y);
+            const x1 = @max(damage.x + damage.w, c.x + c.w);
+            const y1 = @max(damage.y + damage.h, c.y + c.h);
+            damage = mkRect(x0, y0, x1 - x0, y1 - y0);
+        }
+    }
+    irqRestore(flags);
+}
+
+// ---------------- 绘制原语（apps.zig 共用；全部尊重 clip） ----------------
+
+pub fn setPx(x: i32, y: i32, c: u32) void {
     if (x < clip.x or y < clip.y or x >= clip.x + clip.w or y >= clip.y + clip.h) return;
     backbuf[@intCast(y * SCR_W + x)] = c;
 }
 
-fn fillRect(r: Rect, c: u32) void {
+pub fn fillRect(r: Rect, c: u32) void {
     const x0 = @max(r.x, clip.x);
     const y0 = @max(r.y, clip.y);
     const x1 = @min(r.x + r.w, clip.x + clip.w);
@@ -151,18 +260,18 @@ fn fillRect(r: Rect, c: u32) void {
     }
 }
 
-fn hline(x0: i32, x1: i32, y: i32, c: u32) void {
+pub fn hline(x0: i32, x1: i32, y: i32, c: u32) void {
     var x = x0;
     while (x <= x1) : (x += 1) setPx(x, y, c);
 }
 
-fn vline(x: i32, y0: i32, y1: i32, c: u32) void {
+pub fn vline(x: i32, y0: i32, y1: i32, c: u32) void {
     var y = y0;
     while (y <= y1) : (y += 1) setPx(x, y, c);
 }
 
 /// 1px 斜面：raised = 顶/左亮、底/右暗；sunken 反转
-fn bevel1(r: Rect, raised: bool) void {
+pub fn bevel1(r: Rect, raised: bool) void {
     const tl = if (raised) pal.white else pal.shadow;
     const br = if (raised) pal.shadow else pal.white;
     hline(r.x, r.x + r.w - 1, r.y, tl);
@@ -172,7 +281,7 @@ fn bevel1(r: Rect, raised: bool) void {
 }
 
 /// 2px 斜面：Win3.1 控件的标准立体感（外圈白/暗灰，内圈亮灰/黑）
-fn bevel2(r: Rect, raised: bool) void {
+pub fn bevel2(r: Rect, raised: bool) void {
     bevel1(r, raised);
     const tl = if (raised) pal.ltf else pal.black;
     const br = if (raised) pal.black else pal.ltf;
@@ -185,7 +294,7 @@ fn bevel2(r: Rect, raised: bool) void {
 }
 
 /// 文本：8x16 位图字体，MSB=最左像素
-fn text(x: i32, y: i32, s: []const u8, fg: u32) void {
+pub fn text(x: i32, y: i32, s: []const u8, fg: u32) void {
     var cx = x;
     for (s) |ch| {
         const idx: usize = if (ch >= font.FIRST and ch < font.FIRST + font.COUNT)
@@ -207,7 +316,7 @@ fn text(x: i32, y: i32, s: []const u8, fg: u32) void {
 }
 
 /// 粗体：同一字符画两遍，横向错开 1px（3.1 时代的"字体加粗"）
-fn textBold(x: i32, y: i32, s: []const u8, fg: u32) void {
+pub fn textBold(x: i32, y: i32, s: []const u8, fg: u32) void {
     text(x, y, s, fg);
     text(x + 1, y, s, fg);
 }
@@ -222,15 +331,30 @@ fn clockRect() Rect {
     return mkRect(SCR_W - 4 - 60, TB_Y + 3, 60, TASKBAR_H - 6);
 }
 
+/// 任务栏整体（窗口按钮变化时的脏区）
+fn taskbarRect() Rect {
+    return mkRect(0, TB_Y, SCR_W, TASKBAR_H);
+}
+
+/// 第 wi 个窗口的任务栏按钮（ZOS 按钮右侧一排）
+fn taskBtnRect(wi: usize) Rect {
+    const x0 = btnRect().x + btnRect().w + 22;
+    return mkRect(x0 + @as(i32, @intCast(wi)) * 86, TB_Y + 3, 82, TASKBAR_H - 6);
+}
+
 fn menuHeight() i32 {
-    return MENU_PAD * 2 + ITEM_H * 2 + SEP_H;
+    var h = MENU_PAD * 2;
+    for (menu_items) |it| {
+        h += if (it.sep) SEP_H else ITEM_H;
+    }
+    return h;
 }
 
 fn menuRect() Rect {
     return mkRect(2, TB_Y - menuHeight() - 3, MENU_W, menuHeight());
 }
 
-fn winRect(w: *const Win) Rect {
+pub fn winRect(w: *const Win) Rect {
     return mkRect(w.x, w.y, w.w, w.h);
 }
 
@@ -246,8 +370,9 @@ fn closeBoxRect(w: *const Win) Rect {
     return mkRect(w.x + w.w - 7 - 18, w.y + 5, 18, 18);
 }
 
-fn okRect(w: *const Win) Rect {
-    return mkRect(w.x + @divTrunc(w.w - 70, 2), w.y + w.h - 32, 70, 22);
+/// 客户区：标题栏以下、外框以内（apps.zig 的画布）
+pub fn clientRect(w: *const Win) Rect {
+    return mkRect(w.x + 3, w.y + 28, w.w - 6, w.h - 31);
 }
 
 fn cursorRect() Rect {
@@ -274,6 +399,18 @@ fn paintTaskbar() void {
     // 按钮右侧的蚀刻分隔线（暗+亮 = 凹槽）
     vline(b.x + b.w + 8, TB_Y + 4, TB_Y + TASKBAR_H - 5, pal.shadow);
     vline(b.x + b.w + 9, TB_Y + 4, TB_Y + TASKBAR_H - 5, pal.white);
+
+    // 窗口按钮：打开过的窗口各占一格（Win95 式最小化/还原）
+    const top = topVisible();
+    for (&windows, 0..) |*w, wi| {
+        if (!w.opened) continue;
+        const tb = taskBtnRect(wi);
+        fillRect(tb, pal.chrome);
+        const active_btn = w.visible and top == wi;
+        bevel2(tb, !active_btn); // 活动窗口的按钮呈按下状
+        const t_off: i32 = if (active_btn) 1 else 0;
+        text(tb.x + 8 + t_off, tb.y + 1 + t_off, w.tb, pal.black);
+    }
 
     // 时钟面板（凹）
     const c = clockRect();
@@ -313,12 +450,11 @@ fn paintMenu() void {
     }
 }
 
+/// 窗口外框（WM 拥有的部分）：边框/标题栏/系统菜单盒/关闭盒
 fn paintWindow(w: *const Win) void {
-    // 外框：灰底 + 2px 凸边
     fillRect(winRect(w), pal.chrome);
     bevel2(winRect(w), true);
 
-    // 标题栏（藏青底、白粗体）
     const tr = titleRect(w);
     fillRect(tr, pal.navy);
 
@@ -338,31 +474,10 @@ fn paintWindow(w: *const Win) void {
     fillRect(mkRect(cx - 1, cb.y + 8, 3, 1), pal.black);
     fillRect(mkRect(cx, cb.y + 9, 1, 1), pal.black);
 
-    textBold(tr.x + 28, tr.y + 3, "About ZOS", pal.white);
+    textBold(tr.x + 28, tr.y + 3, w.title, pal.white);
 
-    // 客户区文字
-    const lines = [_][]const u8{
-        "ZOS 0.1.0 -- teaching kernel in Zig",
-        "Compositor: damage-rect repaint",
-        "Input: PS/2 mouse (IRQ12)",
-        "VBE 640x480x32 via GRUB gfxpayload",
-    };
-    var ty = w.y + 36;
-    for (lines) |l| {
-        text(w.x + 18, ty, l, pal.black);
-        ty += 18;
-    }
-
-    // 按钮区上方的凹分隔线
-    const dy = w.y + w.h - 38;
-    hline(w.x + 8, w.x + w.w - 9, dy, pal.shadow);
-    hline(w.x + 8, w.x + w.w - 9, dy + 1, pal.white);
-
-    // OK 按钮
-    const ok = okRect(w);
-    fillRect(ok, pal.chrome);
-    bevel2(ok, true);
-    textBold(ok.x + 28, ok.y + 3, "OK", pal.black);
+    // 客户区：应用自己画
+    apps.paintClient(w);
 }
 
 // 鼠标光标（白箭头 + 黑描边，热点在左上角；bit15 = 最左像素）
@@ -420,7 +535,7 @@ fn paintCursor() void {
 // ---------------- 合成 ----------------
 
 /// 重绘脏区：按 z 序把各层画进后备缓冲，再搬运到帧缓冲。
-/// 空闲时是空函数（无脏区不干活）。
+/// 空闲时是空函数（无脏区不干活）。只在 IRQ0/IRQ12/init 调用。
 pub fn repaint() void {
     if (!active) return;
     const r = damage;
@@ -429,8 +544,8 @@ pub fn repaint() void {
     clip = r;
 
     paintDesktop();
-    for (&windows) |*w| {
-        if (w.visible) paintWindow(w);
+    for (zorder) |wi| {
+        if (windows[wi].visible) paintWindow(&windows[wi]);
     }
     paintTaskbar();
     if (menu_open) paintMenu();
@@ -452,7 +567,7 @@ fn blit(r: Rect) void {
 
 // ---------------- 输入（IRQ12 上下文调用） ----------------
 
-/// 鼠标相对位移（dy 已换算为屏幕方向）+ 按键位图 bit0=左键
+/// 鼠标相对位移（dy 已换算为屏幕方向）+ 按键位图 bit0=左 bit1=右
 pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
     if (!active) return;
 
@@ -482,6 +597,11 @@ pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
         left_down = left;
         if (left) handlePress(mouse_x, mouse_y) else drag = null;
     }
+    const right = buttons & 2 != 0;
+    if (right != right_down) {
+        right_down = right;
+        if (right and drag == null) handleRightPress(mouse_x, mouse_y);
+    }
 
     repaint();
 }
@@ -494,15 +614,6 @@ fn closeMenu() void {
     addDamage(btnRect());
 }
 
-fn openAbout() void {
-    const w = &windows[0];
-    addDamage(winRect(w));
-    w.x = @divTrunc(SCR_W - w.w, 2);
-    w.y = 150;
-    w.visible = true;
-    addDamage(winRect(w));
-}
-
 /// 左键按下：自顶向下做命中测试
 fn handlePress(x: i32, y: i32) void {
     // 1) 菜单打开时：本次点击只作用于菜单（点外面 = 收起）
@@ -511,8 +622,15 @@ fn handlePress(x: i32, y: i32) void {
         if (inRect(x, y, m)) {
             const idx = hitMenuItem();
             if (idx >= 0 and menu_items[@intCast(idx)].enabled) {
+                const act = menu_items[@intCast(idx)].act;
                 closeMenu();
-                if (idx == 0) openAbout(); // 菜单项动作表（目前只有一项）
+                switch (act) {
+                    .about => openApp(.about),
+                    .filer => openApp(.filer),
+                    .terminal => openApp(.terminal),
+                    .mine => openApp(.mine),
+                    .none => {},
+                }
             }
         } else {
             closeMenu();
@@ -520,25 +638,28 @@ fn handlePress(x: i32, y: i32) void {
         return;
     }
 
-    // 2) 窗口（数组倒序 = z 序自顶向下）
-    var i: usize = windows.len;
-    while (i > 0) {
-        i -= 1;
-        const w = &windows[i];
+    // 2) 窗口（沿 z 序自顶向下；点中即提层，再按部位分发）
+    var zi: usize = zorder.len;
+    while (zi > 0) {
+        zi -= 1;
+        const wi = zorder[zi];
+        const w = &windows[wi];
         if (!w.visible) continue;
-        if (inRect(x, y, closeBoxRect(w)) or inRect(x, y, okRect(w))) {
-            w.visible = false;
-            addDamage(winRect(w));
+        if (inRect(x, y, closeBoxRect(w))) {
+            closeWin(w);
             return;
         }
+        if (!inRect(x, y, winRect(w))) continue;
+        raiseWindow(wi);
         if (inRect(x, y, titleRect(w)) and !inRect(x, y, sysBoxRect(w))) {
-            drag = .{ .idx = i, .offx = x - w.x, .offy = y - w.y };
-            return;
+            drag = .{ .idx = wi, .offx = x - w.x, .offy = y - w.y };
+        } else if (!inRect(x, y, titleRect(w))) {
+            apps.onPress(w, x, y); // 客户区：交给应用
         }
-        if (inRect(x, y, winRect(w))) return; // 客户区：吞掉点击
+        return;
     }
 
-    // 3) 任务栏 ZOS 按钮：弹出菜单
+    // 3) 任务栏：ZOS 按钮弹菜单，窗口按钮最小化/还原/提层
     if (inRect(x, y, btnRect())) {
         menu_open = true;
         btn_pressed = true;
@@ -547,7 +668,33 @@ fn handlePress(x: i32, y: i32) void {
         addDamage(menuRect());
         return;
     }
+    for (&windows, 0..) |*w, wi| {
+        if (!w.opened) continue;
+        if (!inRect(x, y, taskBtnRect(wi))) continue;
+        if (!w.visible) {
+            showWindow(wi); // 还原（并提层）
+        } else if (topVisible() == wi) {
+            closeWin(w); // 活动窗口 → 最小化
+        } else {
+            raiseWindow(wi); // 切到前台
+        }
+        addDamage(taskbarRect());
+        return;
+    }
     // 4) 桌面：无操作
+}
+
+/// 右键按下：只有扫雷用（插旗）。点在拖拽外的窗口客户区即转发
+fn handleRightPress(x: i32, y: i32) void {
+    var zi: usize = zorder.len;
+    while (zi > 0) {
+        zi -= 1;
+        const w = &windows[zorder[zi]];
+        if (!w.visible) continue;
+        if (!inRect(x, y, winRect(w))) continue;
+        if (!inRect(x, y, titleRect(w))) apps.onRightPress(w, x, y);
+        return;
+    }
 }
 
 fn hitMenuItem() i8 {
@@ -566,7 +713,18 @@ fn hitMenuItem() i8 {
 pub fn onTick() void {
     if (!active) return;
     if (updateClock()) addDamage(clockRect());
+    apps.onTick(); // 应用计时器（终端光标闪烁/扫雷秒表）
     repaint();
+}
+
+/// 控制台镜像：console.putChar 的每个字节都进终端行缓冲
+/// （gui 未激活时 apps.termPutChar 也照收——开机日志一个不漏）
+pub fn onConsoleChar(c: u8) void {
+    apps.termPutChar(c);
+    if (active) {
+        const w = windowByKind(.terminal);
+        if (w.visible) addDamage(clientRect(w));
+    }
 }
 
 fn readCmos(reg: u8) u8 {
@@ -667,6 +825,7 @@ pub fn init() void {
     };
 
     active = true;
+    apps.init(); // 应用状态复位（此刻 tarfs 未解析，文件浏览器延迟初始化）
 
     // PS/2 鼠标（失败不致命：GUI 只是没有光标输入）
     const mouse = @import("mouse.zig");
@@ -680,5 +839,5 @@ pub fn init() void {
     _ = updateClock();
     addDamage(SCREEN);
     repaint();
-    console.kprintf("gui: 640x480x32 compositor up (desktop/taskbar/menu/cursor)\n", .{});
+    console.kprintf("gui: 640x480x32 compositor up (desktop/taskbar/menu/windows/apps)\n", .{});
 }

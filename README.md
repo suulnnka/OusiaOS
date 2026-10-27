@@ -67,15 +67,27 @@ python3 scripts/audiotest.py   # wav 录音验证频率/时长（详见 docs/aud
 内核控制台同时输出到 VGA 文本屏（0xB8000）与 COM1 串口；
 `qemu -serial stdio` 时串口就是完整终端（输出 + 输入 + 回显）。
 
-### 图形界面（Win3.1 风格桌面 + 任务栏）
+### 图形界面（Win3.1 风格桌面 + 窗口 + 任务栏）
 
 ISO 引导时 GRUB 会把视频模式设为 VBE 640x480x32，内核随后启动
-GUI 合成器：青绿桌面、带 ZOS 按钮/RTC 时钟的任务栏、可拖拽的
-About 窗口（点 ZOS 按钮弹出菜单 → About ZOS）。串口 shell 照常可用，
-两套界面互不干扰。无头环境跑自动化截图与鼠标脚本：
+GUI 合成器：青绿桌面、可拖拽窗口（点击自动提到顶层）、带 ZOS
+按钮/RTC 时钟/窗口按钮的任务栏。点 ZOS 按钮弹开始菜单，内置
+四个应用：
+
+- **File Manager** —— 浏览 tarfs：单击目录进入、`..` 返回、
+  单击文件右栏预览内容（超过 13 行带滚动条）
+- **Terminal** —— 控制台镜像：显示完整开机日志与 shell 会话，
+  在窗口里打字就是敲串口 shell（`console.putChar` 三路输出），
+  光标闪烁、支持 `clear`
+- **Minesweeper** —— 经典 9×9/10 雷：左键翻开（首击保护区 +
+  空白洪泛）、右键插旗、雷数/笑脸/计时 LED 三件套
+- **About ZOS** —— 版本信息对话框
+
+串口 shell 照常可用，两套界面互不干扰。无头环境跑自动化截图与
+鼠标/键盘脚本（开全部四个应用、终端里真打一条 `ls`、扫雷翻格插旗）：
 
 ```bash
-python3 scripts/guishot.py     # 自动开机→点菜单→开窗口→拖动，存 /tmp/zos-shot-*.png
+python3 scripts/guishot.py     # 自动开机→菜单→四应用→拖动，存 /tmp/zos-shot-*.png
 ```
 
 详见 [docs/gui.md](docs/gui.md)。
@@ -104,7 +116,8 @@ python3 scripts/guishot.py     # 自动开机→点菜单→开窗口→拖动�
 | `kernel/pci.zig` | **PCI 枚举** | 配置空间访问、BAR 解码、MMIO 映射、总线主控使能 |
 | `kernel/e1000.zig` | **网卡驱动** | e1000 描述符环（TX/RX）、DMA、轮询收发 |
 | `kernel/net.zig` | **协议栈** | 以太网/ARP/IP/ICMP/UDP+DNS/TCP(停等)+HTTP |
-| `kernel/gui.zig` | **GUI 合成器** | VBE 帧缓冲、分层合成、脏矩形重绘、Win3.1 桌面/任务栏 |
+| `kernel/gui.zig` | **GUI 合成器** | VBE 帧缓冲、分层合成、脏矩形重绘、窗口管理（z 序/任务栏/菜单） |
+| `kernel/apps.zig` | **GUI 应用** | 文件浏览器（vfs 按需拉取）、终端（console 镜像）、扫雷（状态机） |
 | `kernel/mouse.zig` | **PS/2 鼠标** | 8042 aux 口、IRQ12、三字节数据包协议 |
 | `kernel/font.zig` | **位图字体** | 8x16（scripts/genfont.py 从 PSF 控制台字体生成） |
 | `kernel/audio.zig` | **音频子系统** | AC'97 驱动（NAM/NABM、BDL 描述符环 DMA）、DDS 正弦合成 |

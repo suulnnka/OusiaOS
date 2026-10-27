@@ -1,23 +1,30 @@
-# 图形界面：合成器与 Win3.1 风格桌面
+# 图形界面：合成器、窗口管理与内核应用
 
-ZOS 的 GUI 是**内核内**的图形子系统（`kernel/gui.zig` + `kernel/mouse.zig`
-+ `kernel/font.zig`）：GRUB 负责切换视频模式，内核拿到帧缓冲后由
-**合成器（compositor）**管理分层表面的绘制与刷新，输入来自 PS/2 鼠标
-中断。串口 shell 与 GUI 并行共存，互不干扰。
+ZOS 的 GUI 是**内核内**的图形子系统（`kernel/gui.zig` 窗口管理 +
+`kernel/apps.zig` 应用 + `kernel/mouse.zig` + `kernel/font.zig`）：
+GRUB 负责切换视频模式，内核拿到帧缓冲后由**合成器（compositor）**
+管理分层表面的绘制与刷新，输入来自 PS/2 鼠标中断。串口 shell 与
+GUI 并行共存，互不干扰。
 
 ```
 ┌────────────────────────────────────────────────────┐
-│                    青绿桌面 (teal)                   │
-│                                                    │
-│         [About ZOS 窗口（可拖拽）]                   │
-│                                                    │
+│                 青绿桌面 (teal)                      │
+│  ┌ Terminal ────────────┐  ┌ Minesweeper ┐          │
+│  │ / $ ls               │  │ [010]☺[000] │          │
+│  │ etc dev bin ...      │  │ ▦▦▦▦▦▦▦▦▦   │          │
+│  └──────────────────────┘  └─────────────┘          │
+│     ┌ File Manager ───────────────┐                 │
+│     │ /etc │ .. │ ▲ │ 预览│                          │
 ├────────────────────────────────────────────────────┤
-│ [ZOS]  │                                      ⌚ 时钟│  ← 任务栏 24px
+│ [ZOS] │ [Files][Terminal][Mines]          ⌚ 时钟    │ ← 任务栏 24px
 └────────────────────────────────────────────────────┘
-   ▲                    ▲
-   └─ 点击弹出菜单        └─ RTC 实时时钟 HH:MM
+   ▲            ▲                     ▲
+   │            └─ 最小化/还原/提层     └─ RTC 实时钟
+   └─ 开始菜单：File Manager / Terminal /
+      Minesweeper / About ZOS
 
-图层（z 序自底向上）：桌面 → 窗口列表 → 任务栏 → 弹出菜单 → 鼠标光标
+图层（z 序自底向上）：桌面 → 窗口（zorder 置换数组）→ 任务栏
+→ 弹出菜单 → 鼠标光标。窗口点击自动提到顶层。
 ```
 
 ## 1. 视频模式：从 GRUB 到帧缓冲
@@ -123,31 +130,77 @@ python3 scripts/genfont.py /usr/share/consolefonts/Uni2-VGA16.psf.gz > kernel/fo
 ## 6. 交互模型（命中测试）
 
 左键按下自顶向下：**菜单**（开着时本次点击只作用于它，点外收起）→
-**窗口**（关闭盒/OK = 隐藏；标题栏 = 开始拖拽，移动时窗口跟随、
-松手结束；客户区吞掉）→ **任务栏按钮**（弹出菜单，按钮保持按下态）→
-桌面无操作。窗口几何与命中共用同一组 Rect 函数（`titleRect`/
-`closeBoxRect`/`okRect`...），绘制和交互永不脱节。
+**窗口**（沿 z 序找最先命中的；关闭盒 = 隐藏；标题栏 = 开始拖拽；
+客户区交给 `apps.onPress`；任何命中先把窗口提到 z 序顶端）→
+**任务栏**（ZOS 按钮 = 弹出菜单；窗口按钮 = 最小化/还原/提层三态）→
+桌面无操作。右键只转发给最顶层窗口的客户区（目前只有扫雷用）。
+窗口几何与命中共用同一组 Rect 函数（`titleRect`/`closeBoxRect`/
+`clientRect`...），绘制和交互永不脱节。
 
-## 7. 自动化截图（scripts/guishot.py）
+## 7. 内核应用（kernel/apps.zig）
+
+窗口管理器（gui.zig）只画窗口外框和标题栏；客户区的画法与点击行为
+按 `WinKind` 分发到应用，接口只有四个回调：
+`paintClient / onPress / onRightPress / onTick`（外加打开窗口时的
+`onOpen`）。三个应用展示三种典型数据流：
+
+**File Manager（按需拉取）**：单击目录进入、`..` 返回、单击文件在
+右栏预览（`vfs.listDir`/`vfs.read`，tarfs 是纯内存操作，中断上下文
+安全）。目录枚举后做插入排序（目录在前、同类字典序——内核里手写
+strcmp 的教学点）；条目超过 13 行出滚动条（箭头滚一行、滑轨翻页）。
+
+**Terminal（事件镜像）**：GUI 不另起 shell 会话，而是镜像控制台：
+
+```
+键盘 IRQ1 → tty 行规程 → shell(用户态) read/exec
+shell printf → console.putChar ─┬─ 串口（无头测试/日志）
+                               └─ gui.onConsoleChar → 环形行缓冲
+tty 回显同样走 putChar → 敲的字符自动出现在窗口里
+```
+
+行缓冲 128 行 × 72 列环形数组，支持硬换行、退格（tty 的
+`0x08 ' ' 0x08` 三连回显净效果正确）、TAB、以及 `clear` 发的
+`ESC[2J`（极简 ANSI 状态机）。开机日志从第一个字符就在收集，所以
+任何时刻打开 Terminal 都能看到完整回滚。光标 0.5s 闪烁（IRQ0 相位）。
+
+这是唯一打破"GUI 状态只在中断上下文触碰"约定的地方：shell printf
+发生在进程上下文。两道防线：每字符追加用**关中断的极短临界区**
+（`gui.irqSave/irqRestore`，IRQ 上下文里 IF 本来就关，零开销）；
+环形缓冲按 SPSC 语义使用。重绘仍然只发生在 IRQ0/IRQ12 里（100Hz
+的 tick 保证终端输出最迟 10ms 上屏），`addDamage` 自身也用同一对
+cli/sti 保住"读-改-写"的原子性。
+
+**Minesweeper（自包含状态机）**：9×9、10 雷。左键翻开，**首次点击
+才布雷**（排除首格及其 8 邻 → 必有展开区；种子取 PIT 拍数，xorshift32）；
+空白格洪泛展开（显式栈，81 格小深搜不递归）；右键插旗；全部非雷格
+翻开 = 胜（雷自动插旗），踩雷 = 输（红底高亮、亮出所有雷）。顶部
+经典三件套：雷数/笑脸/计时 LED，笑脸按钮重开，计时由 IRQ0 计秒。
+
+## 8. 自动化截图（scripts/guishot.py）
 
 无头验证 GUI 的工具链：QEMU `-monitor unix:…` + HMP 命令
-（`mouse_move`/`mouse_button`/`screendump`），PPM 用纯 Python zlib
-转 PNG，光标位置由脚本按相对位移累计（起点 = gui.zig 初始光标
-(300,200)）。默认流程覆盖：开机 → 悬停按钮 → 开菜单 → About 窗口 →
-标题栏拖动。
+（`mouse_move`/`mouse_button`/`sendkey`/`screendump`），PPM 用纯
+Python zlib 转 PNG，光标位置由脚本按相对位移累计（起点 = gui.zig
+初始光标 (300,200)）。默认流程覆盖全部四个应用：开机 → 开始菜单 →
+File Manager（进 /etc、预览文件）→ Terminal（`sendkey` 真的打一条
+`ls`，命令与输出经串口同源可核对）→ Minesweeper（翻格、右键插旗）
+→ About + 标题栏拖动。
 
 ```bash
 python3 scripts/guishot.py   # 产物 /tmp/zos-shot-*.png
 ```
 
-## 8. 已知边界与练习
+坑：HMP `mouse_button` 的位掩码是 PS/2 位序 **1=左 2=右 4=中**，
+与直觉的 L/M/R 排列不同（4 会被本内核当中键忽略）。
+
+## 9. 已知边界与练习
 
 - 只支持 640×480×32（后备缓冲静态定长；改分辨率 → 按 pitch 动态
   分配帧映射，或改静态尺寸）。
-- 无窗口管理器语义（无最大化/最小化/键盘焦点/Alt-Tab）；窗口列表
-  固定 4 槽。
-- 键盘事件仍全部走串口 shell/tty，GUI 不接收键盘。
-- 练习方向：① 桌面右键菜单；② 图标（位图 + 双击判定）；
- ③ 窗口数量动态化 + z 序切换（点窗口提到顶）；④ GUI 图形终端
-  （把 console 输出镜像进一个可滚动窗口——串口 shell 就有屏幕了）；
-  ⑤ 硬件光标换成软件光标后的性能对比（QEMU 下不明显，真机有意义）。
+- 窗口固定 4 槽（每应用单例）；无最大化/键盘焦点/Alt-Tab。
+- Terminal 镜像没有输入焦点概念（键盘始终归串口 shell 会话），
+  也不支持方向键翻回滚缓冲。
+- 文件浏览器只读（tarfs 本身只读）；无双击、无文件名超长省略号。
+- 练习方向：① 桌面图标 + 双击打开；② 窗口槽动态化（空闲槽复用，
+  同时开两个 Terminal）；③ Terminal 回滚（PageUp 翻历史）；
+  ④ 扫雷难度选择与最佳成绩；⑤ 窗口最大化/键盘焦点切换。
