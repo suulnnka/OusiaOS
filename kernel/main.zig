@@ -38,7 +38,7 @@ export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
     const gui_mode = multiboot.sniffFramebuffer(mbi_virt);
     console.init(gui_mode);
 
-    console.kprintf("\nZOS 0.1.0 -- a tiny teaching kernel in Zig\n", .{});
+    console.kprintf("\nZOS 0.2.0 -- a tiny teaching kernel in Zig\n", .{});
     console.kprintf("boot: 64-bit long mode OK\n", .{});
 
     if (magic != multiboot.MB2_BOOTLOADER_MAGIC) {
@@ -135,6 +135,36 @@ export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
     } else {
         console.kprintf("boot: continue without filesystem\n", .{});
     }
+
+    // ---- 真磁盘：ATA PIO + ext2 挂载到 /mnt（失败不致命，无盘可继续）----
+    // tarfs（initrd，RAM）之上挂 ext2（磁盘，可读写）——经典的
+    // "内存根文件系统 + 挂载真磁盘"两段式
+    if (@import("ata.zig").init() and @import("ext2.zig").mount() and vfs.mountExt2("/mnt")) {
+        console.kprintf("boot: ext2 mounted at /mnt\n", .{});
+        console.kprintf("boot: ls /mnt\n", .{});
+        if (vfs.resolve("/mnt", "/")) |mnt| {
+            vfs.listDir(mnt, {}, struct {
+                fn cb(_: void, name: []const u8, _: usize) void {
+                    console.kprintf("  {s}\n", .{name});
+                }
+            }.cb);
+        }
+        if (vfs.resolve("/mnt/hello.txt", "/")) |node| {
+            var buf: [128]u8 = undefined;
+            const n = vfs.read(node, 0, &buf);
+            if (n > 0) {
+                console.kprintf("boot: cat /mnt/hello.txt:\n", .{});
+                for (buf[0..@intCast(n)]) |c| console.putChar(c);
+                console.kprintf("\n", .{});
+            }
+        }
+    } else {
+        console.kprintf("boot: no ext2 disk (run scripts/mkdisk.sh, QEMU needs -drive)\n", .{});
+    }
+
+    // GUI 的"晚初始化"：读 /etc/zos.conf 壁纸/屏保设置 + 开机音
+    // （WAV/ramfs 都依赖上面的文件系统就绪）
+    @import("gui.zig").lateInit();
 
     // ---- 网络（在进程诞生前完成：MMIO 映射随内核半区共享）----
     // ---- 进程与调度 ----

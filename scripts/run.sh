@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 
 exec qemu-system-x86_64 \
     -cdrom build/zos.iso \
+    -drive file=build/disk.img,format=raw,if=ide \
     -m 256M \
     -display none \
     -serial stdio \
@@ -14,6 +15,7 @@ exec qemu-system-x86_64 \
     -audiodev none,id=snd0 \
     -device AC97,audiodev=snd0 \
     "$@"
+# -drive：ext2 磁盘（主通道主盘，内核挂到 /mnt；写入持久保存在镜像里）
 # 听声音：把 -audiodev none 换成你的后端，例如（录音到文件）：
 #   -audiodev wav,id=snd0,path=/tmp/zos.wav,out.frequency=48000
 # 或（WSLg/PulseAudio）：

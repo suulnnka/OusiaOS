@@ -27,7 +27,7 @@ const elf = @import("elf.zig");
 const TrapFrame = idt.TrapFrame;
 
 pub const QUANTUM = 2; // 时间片 = 2 tick (20ms)
-pub const MAX_PROCS = 16;
+pub const MAX_PROCS = 24; // 多实例 GUI 应用 + shell 需要的容量
 pub const KSTACK_PAGES = 4; // 每进程内核栈 16KB
 
 /// 用户栈：16 页放在用户空间最高端
@@ -567,6 +567,12 @@ fn std_strlen(buf: []const u8) usize {
 
 pub const ExecError = error{ NoEnt, Access, BadExe, NoMem };
 
+/// ext2 ELF 的暂存缓冲：块设备文件没有 tarfs 那样的现成内存切片可
+/// 借用，exec 时整文件读进来。教学简化：同一时刻只有一次 exec 在跑
+/// （execve 全程不让出 CPU）；256KB 覆盖本系统全部用户程序。
+/// 注意：内核栈只有 16KB，大缓冲绝不能放栈上。
+var exec_disk_buf: [256 * 1024]u8 = undefined;
+
 /// execve：用 path 的 ELF 镜像替换当前进程地址空间。
 /// argv 为参数列表。成功后不再返回（从新程序入口进入用户态）；
 /// 失败返回错误（原镜像保持可用）。执行前检查 x 权限位（含路径遍历）。
@@ -581,12 +587,24 @@ pub fn execve(path: []const u8, argv: []const []const u8) ExecError!void {
     if (inf.is_dir or inf.is_console) return error.BadExe;
     // exec 权限：x 位（root 旁路）
     if (!vfs.mayAccess(inf, p.uid, p.gid, .x)) return error.Access;
-    const file_node = tarfs.getNode(node - 2);
-    const data = file_node.data orelse return error.BadExe;
 
-    // 1. 新地址空间 + 加载 ELF
+    // ELF 数据来源：tarfs 直接指进 initrd 内存（零拷贝）；ext2 走
+    // 块设备读入暂存缓冲——两个文件系统经 vfs 统一，此处只是取数差异
+    const data: []const u8 = blk: {
+        if (vfs.isExt2(node)) {
+            const n = vfs.read(node, 0, &exec_disk_buf);
+            if (n <= 0) return error.BadExe;
+            break :blk exec_disk_buf[0..@intCast(n)];
+        }
+        const file_node = tarfs.getNode(node - 2);
+        break :blk file_node.data orelse return error.BadExe;
+    };
+
+    // 1. 新地址空间 + 加载 ELF（后续任何失败都要销毁它——旧空间
+    //    在失败路径上必须保持可用，泄漏检查是 execve 的经典练习）
     const new_map = vmm.newKernelSharedPml4();
     if (new_map == 0) return error.NoMem;
+    errdefer vmm.destroyUserSpace(new_map);
     const img = elf.load(new_map, data) orelse {
         return error.BadExe;
     };
@@ -610,7 +628,7 @@ pub fn execve(path: []const u8, argv: []const []const u8) ExecError!void {
     var si: usize = 0;
     while (si < USER_STACK_PAGES) : (si += 1) {
         const va = USER_STACK_TOP - (si + 1) * 4096;
-        const frame = pmm.allocFrame() orelse return error.NoMem; // 简化：失败时旧空间仍在
+        const frame = pmm.allocFrame() orelse return error.NoMem; // errdefer 兜底清理 new_map
         @memset(@as([*]u8, @ptrFromInt(vmm.physToVirt(frame)))[0..4096], 0);
         if (!vmm.mapPage(new_map, va, frame, vmm.P | vmm.W | vmm.U)) return error.NoMem;
     }

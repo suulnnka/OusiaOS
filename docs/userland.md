@@ -193,3 +193,6 @@ zig cc -target x86_64-freestanding -O1 -nostdlib -no-pie \
 | wc | C | Unix wc 移植 |
 | cdemo | C | libc 自检 |
 | curl | C | HTTP 客户端 |
+| mkdir / rm / df | Zig | 目录创建 / 删除（-d 删空目录）/ 文件系统概要 |
+| play | Zig | 播放 WAV（SYS_zos_wav，内核解析 RIFF + AC'97 DMA） |
+| fm / note / paint / calc / mine / cp | Zig | 用户态 GUI 应用（lib/win.zig 窗口库） |

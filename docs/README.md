@@ -10,6 +10,7 @@
 |---|---|---|
 | [architecture.md](architecture.md) | 总体架构：启动流程、内存布局、模块全景、关键控制流 | 刚拿到代码，先建立全局图景 |
 | [kernel.md](kernel.md) | 内核子系统：控制台、中断体系、物理/虚拟内存、文件系统、进程与调度 | 对照源码逐模块精读 |
+| [fs.md](fs.md) | 文件系统：ATA 块设备、ext2 读/写实现、VFS 挂载表 | 学真磁盘文件系统时读 |
 | [syscalls.md](syscalls.md) | 系统调用参考：编号、参数、语义、错误码、使用示例 | 写用户程序、调系统调用时查阅 |
 | [network.md](network.md) | 网络栈：PCI 枚举、e1000 驱动、ARP/IP/ICMP/DNS/TCP/HTTP | 学驱动与协议实现 |
 | [gui.md](gui.md) | 图形界面：VBE 帧缓冲、合成器、Win3.1 桌面/任务栏、PS/2 鼠标 | 学图形子系统与输入驱动 |
@@ -30,7 +31,7 @@
 │   ▼                          ├─────►│   └─ 0x80 系统调用分发            │
 │ crt0 _start → main → exit    │      │  syscall.zig (POSIX 子集)         │
 └─────────────────────────────┘      │   ├─ proc.zig  进程/调度/swtch     │
-                                     │   ├─ vfs/tarfs/elf 文件与加载     │
+                                     │   ├─ vfs/tarfs/ext2/elf 文件与加载│
    fork ──► execve ──► wait4         │   ├─ vmm/pmm   四级页表/位图       │
                                      │   ├─ net/e1000/pci 网络栈         │
                                      │   └─ console/serial/tty VGA+COM1  │

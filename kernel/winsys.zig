@@ -33,8 +33,12 @@ pub const EV_PRESS: u8 = 1; // 左键按下（x,y = 客户区坐标）
 pub const EV_RPRESS: u8 = 2; // 右键按下
 pub const EV_RELEASE: u8 = 3; // 左键松开
 pub const EV_MOVE: u8 = 4; // 移动（含按住拖动；捕获期间划出窗口也有）
-pub const EV_KEY: u8 = 5; // 键盘（code = ASCII 或 0xF0..0xF3 方向键）
+pub const EV_KEY: u8 = 5; // 键盘（code = ASCII/控制码 或 0xF0..0xF8 私有键码）
 pub const EV_CLOSE: u8 = 6; // 用户点了关闭盒：应用应尽快 exit
+pub const EV_RESIZE: u8 = 7; // 表面已重分配（x,y = 新客户区尺寸）；重画全窗口
+pub const EV_DBL: u8 = 8; // 双击（快速二次左键，x,y = 客户区坐标）
+pub const EV_ACTIVATE: u8 = 9; // 窗口成为活动窗口（键盘焦点到手，可画光标）
+pub const EV_DEACTIVATE: u8 = 10; // 失去活动状态（藏起光标/选区高亮）
 
 /// 与用户态 lib/win.zig 的 WinEvent 二进制布局一致
 pub const WinEvent = extern struct {
@@ -54,7 +58,7 @@ const EV_RING = 32;
 // 从 GUI_USER_SLOT_BASE 起分配。窗口几何/绘制权威在 gui.zig；本模块
 // 管：表面帧、事件环、属主进程。
 
-pub const MAX_USER_WINDOWS = 6; // 同时打开的用户态应用窗口数
+pub const MAX_USER_WINDOWS = 10; // 同时打开的用户态应用窗口数
 const SURF_MAX_FRAMES = 160; // 单窗口表面上限 640KB
 
 const Win = struct {
@@ -303,14 +307,146 @@ pub fn sysFmt() isize {
     return (@as(isize, s.rsh) << 10) | (@as(isize, s.gsh) << 5) | s.bsh;
 }
 
-/// IRQ 上下文：菜单点击启动应用（proc.spawnKernel 在 IF=0 下安全；
-/// 已在跑的只把它的窗口提到顶层——单实例语义）
-/// 临时调试入口：从串口 shell 开关鼠标包日志（"mousedbg on"）
-pub fn launchApp(path: []const u8) void {
-    if (proc.findByName(path)) |p| {
-        gui.raiseWindowsOfPid(p.pid);
-        return;
+// ---------------- 系统剪贴板 ----------------
+//
+// 全局一块缓冲（教学版单选区、纯文本）：EV_KEY 里的 Ctrl+C/X/V
+// (0x03/0x18/0x16) 由应用解释——Edit 控件把它们翻译成 get/set。
+
+const CLIP_MAX = 1024;
+var clip: [CLIP_MAX]u8 = undefined;
+var clip_len: usize = 0;
+
+pub fn sysClipSet(ptr: usize, len: usize) isize {
+    if (len > CLIP_MAX) return -22;
+    const src: [*]const u8 = @ptrFromInt(ptr);
+    @memcpy(clip[0..len], src[0..len]);
+    clip_len = len;
+    return @intCast(len);
+}
+
+pub fn sysClipGet(ptr: usize, cap: usize) isize {
+    if (clip_len == 0) return 0; // 空剪贴板
+    const n = @min(clip_len, cap);
+    const dst: [*]u8 = @ptrFromInt(ptr);
+    @memcpy(dst[0..n], clip[0..n]);
+    return @intCast(n);
+}
+
+// ---------------- 表面重分配（resize/最大化） ----------------
+//
+// 教学要点：表面是一组物理帧 + 一段用户虚拟区。重分配 = 申请新帧、
+// 新映射（新的 VA 槽，避免与旧映射撞车）、逐像素搬共同区域、再拆旧
+// 映射还旧帧。搬完推一条 EV_RESIZE，应用重画新尺寸的全窗口。
+
+/// 读表面像素（x,y 为表面坐标；越界返回 0）
+fn surfGet(frames: []const usize, cw: usize, x: usize, y: usize) u32 {
+    const byte_off = (y * cw + x) * 4;
+    const fi = byte_off >> 12;
+    if (fi >= frames.len) return 0;
+    const in_page = byte_off & 0xFFF;
+    const src: *const u32 = @ptrFromInt(vmm.physToVirt(frames[fi]) + in_page);
+    return src.*;
+}
+
+fn surfSet(frames: []const usize, cw: usize, x: usize, y: usize, v: u32) void {
+    const byte_off = (y * cw + x) * 4;
+    const fi = byte_off >> 12;
+    if (fi >= frames.len) return;
+    const in_page = byte_off & 0xFFF;
+    const dst: *u32 = @ptrFromInt(vmm.physToVirt(frames[fi]) + in_page);
+    dst.* = v;
+}
+
+/// 把窗口表面重分配为 cw×ch（调用方：应用自身 syscall 或 WM 的
+/// 最大化/还原）。成功返回 true 并推 EV_RESIZE。
+///
+/// 关键设计：**用户虚拟地址保持不变**，只换背后的物理帧——
+/// 应用缓存的表面指针（lib/win.zig 的 px）永远有效，WM 替它 resize
+/// （最大化）也不会踩出页错误。2MB 对齐的 VA 槽位装得下上限 160 页
+/// 的任何表面，原位重映射总是可行。
+/// 可在 IRQ 上下文调用（WM 侧）：进程此刻阻塞在 win_wait，它的页表
+/// 不是活跃 CR3，unmap/map 只是在改页表内存。
+pub fn resizeSlot(wi: usize, cw: i32, ch: i32) bool {
+    if (cw <= 0 or ch <= 0 or cw > 1024 or ch > 700) return false;
+    const w = winAtSlot(wi) orelse return false;
+    const p = proc.findByPid(w.owner_pid) orelse return false;
+    const ncw: usize = @intCast(cw);
+    const nch: usize = @intCast(ch);
+    const pages = (ncw * nch * 4 + 0xFFF) >> 12;
+    if (pages > SURF_MAX_FRAMES) return false;
+
+    // 1) 分配新帧
+    var nf: [SURF_MAX_FRAMES]usize = @splat(0);
+    var got: usize = 0;
+    while (got < pages) : (got += 1) {
+        const f = pmm.allocFrame() orelse break;
+        nf[got] = f;
     }
+    if (got < pages) {
+        for (nf[0..got]) |f| pmm.freeFrame(f);
+        return false;
+    }
+
+    // 2) 搬共同区域（旧帧还在手里，按物理地址直读直写）
+    const copy_w = @min(@as(usize, @intCast(w.cw)), ncw);
+    const copy_h = @min(@as(usize, @intCast(w.ch)), nch);
+    var y: usize = 0;
+    while (y < copy_h) : (y += 1) {
+        var x: usize = 0;
+        while (x < copy_w) : (x += 1) {
+            surfSet(nf[0..got], ncw, x, y, surfGet(w.frames[0..w.nframes], @intCast(w.cw), x, y));
+        }
+    }
+
+    // 3) 拆旧映射、还旧帧（顺序同 freeWindow：先摘映射再释放）
+    for (0..w.nframes) |k| {
+        vmm.unmapPage(p.page_map, w.surf_user_va + k * 4096);
+        pmm.freeFrame(w.frames[k]);
+    }
+
+    // 4) 新帧映射到【同一个】用户 VA 槽位
+    for (0..got) |k| {
+        if (!vmm.mapPage(p.page_map, w.surf_user_va + k * 4096, nf[k], vmm.P | vmm.W | vmm.U)) {
+            // 理论不可达（刚拆掉的 VA 原位重装）；兜底：标记表面失效
+            for (0..got) |m| {
+                if (m >= k) pmm.freeFrame(nf[m]);
+            }
+            console.kprintf("winsys: resize remap failed, surface lost\n", .{});
+            return false;
+        }
+    }
+
+    w.frames = nf;
+    w.nframes = got;
+    w.cw = cw;
+    w.ch = ch;
+
+    gui.resizeUserWindow(wi, cw, ch);
+    push(wi, .{ .kind = EV_RESIZE, .x = @intCast(cw), .y = @intCast(ch), .code = 0, ._pad = 0, ._pad2 = 0 });
+    return true;
+}
+
+/// 应用主动 resize 自己的表面（win_resize syscall）
+pub fn sysResize(cw: usize, ch: usize) isize {
+    const w = myWindow() orelse return -9;
+    if (!resizeSlot(slotOf(w), @intCast(cw), @intCast(ch))) return -22;
+    return 0;
+}
+
+/// win_title(ptr)：改窗口标题（任务栏/标题栏联动）
+pub fn sysTitle(ptr: usize) isize {
+    const w = myWindow() orelse return -9;
+    const s: [*]const u8 = @ptrFromInt(ptr);
+    var len: usize = 0;
+    while (len < 40 and s[len] != 0) len += 1;
+    gui.setWindowTitle(slotOf(w), s[0..len]);
+    return 0;
+}
+
+/// IRQ 上下文：菜单/图标点击启动应用（proc.spawnKernel 在 IF=0 下安全）。
+/// 多实例语义：已开着的应用再点 = 再开一个（窗口槽动态化练习②；
+/// proc 表满时 spawn 失败，静默忽略）。
+pub fn launchApp(path: []const u8) void {
     if (!proc.spawnKernel(path)) {
         console.kprintf("winsys: spawn {s} failed\n", .{path});
     }

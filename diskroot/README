@@ -1,0 +1,17 @@
+This file lives on the ext2 disk (build/disk.img), mounted at /mnt.
+
+Unlike tarfs (the initrd RAM filesystem), everything under /mnt is
+stored in real on-disk ext2 structures: superblock, block/inode
+bitmaps, inode tables with indirect blocks, and directory entries.
+
+Writes persist across reboots -- try:
+
+    echo hi > /mnt/hi.txt
+    cat /mnt/hi.txt
+    reboot   (or Ctrl-A X and re-run zig build run)
+    cat /mnt/hi.txt     # still there!
+
+The host can inspect this disk with e2fsprogs:
+
+    debugfs -R "ls -l /" build/disk.img
+    e2fsck -fn build/disk.img

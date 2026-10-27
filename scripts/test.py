@@ -10,8 +10,10 @@ PTY 模拟真实终端，避免 stdio 管道与 QEMU chardev 的兼容性问题�
 import os
 import pty
 import select
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 QEMU_CMD = [
@@ -29,6 +31,17 @@ QEMU_CMD = [
 
 BOOT_TIMEOUT = 30  # 等待 shell 提示的最长秒数
 CMD_TIMEOUT = 15
+
+
+def prepare_disk() -> str:
+    """复制一份干净的 ext2 镜像作为测试盘（不污染 build/disk.img 的持久内容）"""
+    src = "build/disk.img"
+    if not os.path.exists(src):
+        sys.exit("[FAIL] 缺少 build/disk.img —— 先跑 zig build iso（mkiso.sh 会调 mkdisk.sh）")
+    fd, path = tempfile.mkstemp(prefix="zos_disk_", suffix=".img")
+    os.close(fd)
+    shutil.copyfile(src, path)
+    return path
 
 
 def start_fixture_httpd():
@@ -50,10 +63,10 @@ def start_fixture_httpd():
     return httpd
 
 
-def run_session(commands):
+def run_session(commands, disk):
     master, slave = pty.openpty()
     proc = subprocess.Popen(
-        QEMU_CMD + ["-serial", "stdio"],
+        QEMU_CMD + ["-drive", f"file={disk},format=raw,if=ide", "-serial", "stdio"],
         stdin=slave,
         stdout=slave,
         stderr=subprocess.DEVNULL,
@@ -110,11 +123,22 @@ if __name__ == "__main__":
     cmds = sys.argv[1:] or [
         "uname -a", "ls /", "cat /etc/motd", "echo ok", "ps", "forkdemo",
         "fputest", "hello", "cdemo", "wc /etc/motd",
+        # ext2 磁盘（/mnt）：读、建、写、改权限、删——落盘证据可事后用
+        # debugfs/e2fsck 检查镜像（这里用临时副本，不动 build/disk.img）
+        "ls /mnt", "cat /mnt/hello.txt", "cat /mnt/README",
+        "mkdir /mnt/demo", "echo hello-ext2 > /mnt/demo/a.txt",
+        "cat /mnt/demo/a.txt", "ls /mnt/demo", "chmod 600 /mnt/demo/a.txt",
+        "rm /mnt/demo/a.txt", "rm -d /mnt/demo", "ls /mnt", "df",
         "ifconfig", "ping 10.0.2.2 3", "curl http://10.0.2.2:8099/hello.txt",
         "glcube",
     ]
+    disk = prepare_disk()
     httpd = start_fixture_httpd()
     try:
-        sys.exit(0 if run_session(cmds) else 1)
+        sys.exit(0 if run_session(cmds, disk) else 1)
     finally:
         httpd.shutdown()
+        try:
+            os.unlink(disk)
+        except OSError:
+            pass

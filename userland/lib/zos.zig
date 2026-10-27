@@ -22,6 +22,15 @@ pub inline fn syscall1(nr: usize, a1: usize) isize {
         : .{ .memory = true });
 }
 
+pub inline fn syscall2(nr: usize, a1: usize, a2: usize) isize {
+    return asm volatile ("int $0x80"
+        : [ret] "={rax}" (-> isize),
+        : [nr] "{rax}" (nr),
+          [a] "{rdi}" (a1),
+          [b] "{rsi}" (a2),
+        : .{ .memory = true });
+}
+
 pub inline fn syscall3(nr: usize, a1: usize, a2: usize, a3: usize) isize {
     return asm volatile ("int $0x80"
         : [ret] "={rax}" (-> isize),
@@ -105,6 +114,7 @@ pub const SYS_uname = 63;
 pub const SYS_getcwd = 79;
 pub const SYS_chdir = 80;
 pub const SYS_dup = 32;
+pub const SYS_dup2 = 33;
 pub const SYS_getdents64 = 217;
 pub const SYS_time = 201;
 pub const SYS_chmod = 90;
@@ -113,6 +123,12 @@ pub const SYS_getuid = 102;
 pub const SYS_getgid = 104;
 pub const SYS_setuid = 105;
 pub const SYS_setgid = 106;
+pub const SYS_mkdir = 83;
+pub const SYS_rmdir = 84;
+pub const SYS_unlink = 87;
+pub const SYS_zos_wav = 506;
+pub const SYS_zos_sound = 507;
+pub const SYS_zos_fsinfo = 508;
 
 // ---------------- POSIX 风格 API ----------------
 
@@ -129,10 +145,57 @@ pub fn write(fd: i32, buf: []const u8) isize {
     return syscall3(SYS_write, @intCast(fd), @intFromPtr(buf.ptr), buf.len);
 }
 
+/// open(path) 封装（flags：0 读 / 1 写 / 2 读写 | O_CREAT(0o100) 等）
 pub fn open(path: []const u8, flags: i32) isize {
     var zbuf: [256]u8 = undefined;
     const p = withNul(&zbuf, path);
     return syscall3(SYS_open, @intFromPtr(p.ptr), @intCast(@as(u32, @bitCast(flags))), 0);
+}
+
+// open flags（与内核/ Linux 一致）
+pub const O_RDONLY: i32 = 0;
+pub const O_WRONLY: i32 = 1;
+pub const O_RDWR: i32 = 2;
+pub const O_CREAT: i32 = 0o100;
+pub const O_TRUNC: i32 = 0o1000;
+pub const O_DIRECTORY: i32 = 0o200000;
+
+/// dup2(oldfd, newfd)：把 oldfd 复制到指定槽位（shell 重定向 `>` 的基础）
+pub fn dup2(oldfd: i32, newfd: i32) isize {
+    return syscall2(SYS_dup2, @intCast(oldfd), @intCast(newfd));
+}
+
+/// fsinfo(buf)：文件系统概要一行（df 命令用），返回字节数；<0 = 无磁盘
+pub fn fsinfo(buf: []u8) isize {
+    return syscall2(SYS_zos_fsinfo, @intFromPtr(buf.ptr), buf.len);
+}
+
+/// mkdir(path, perm)：创建目录（练习 5 的可写文件系统）
+pub fn mkdir(path: []const u8, perm: u32) isize {
+    var zbuf: [256]u8 = undefined;
+    const p = withNul(&zbuf, path);
+    return syscall2(SYS_mkdir, @intFromPtr(p.ptr), perm);
+}
+
+/// rmdir(path)：删除空目录
+pub fn rmdir(path: []const u8) isize {
+    var zbuf: [256]u8 = undefined;
+    const p = withNul(&zbuf, path);
+    return syscall1(SYS_rmdir, @intFromPtr(p.ptr));
+}
+
+/// unlink(path)：删除文件
+pub fn unlink(path: []const u8) isize {
+    var zbuf: [256]u8 = undefined;
+    const p = withNul(&zbuf, path);
+    return syscall1(SYS_unlink, @intFromPtr(p.ptr));
+}
+
+/// 播放 WAV 文件（48k 之外的采样率由内核重采样；阻塞至播完）
+pub fn playWav(path: []const u8) isize {
+    var zbuf: [256]u8 = undefined;
+    const p = withNul(&zbuf, path);
+    return syscall1(SYS_zos_wav, @intFromPtr(p.ptr));
 }
 
 pub fn close(fd: i32) isize {

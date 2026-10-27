@@ -23,7 +23,43 @@ export fn main() i32 {
         const n = zos.read(0, &line);
         if (n <= 0) continue;
         var args_buf: [8][64]u8 = undefined;
-        const argv = split(cstr(line[0..@intCast(n)]), &args_buf);
+        const raw = split(cstr(line[0..@intCast(n)]), &args_buf);
+        if (raw.len == 0) continue;
+
+        // ---- 重定向解析："> file" 截断写，">> file" 追加 ----
+        // 教学约定：> 与文件名之间要有空格。实现即经典的 fd 复制：
+        // 子进程里打开文件 → dup2(fd, 1) → 该命令的 stdout 就是文件
+        var redir_path: ?[]const u8 = null;
+        var redir_append = false;
+        var redir_err = false;
+        var clean: [8][]const u8 = undefined;
+        var clean_n: usize = 0;
+        var skip_next = false;
+        for (raw, 0..) |a, ai| {
+            if (skip_next) {
+                skip_next = false;
+                continue;
+            }
+            if (zos.eql(a, ">") or zos.eql(a, ">>")) {
+                redir_append = a.len == 2;
+                if (ai + 1 >= raw.len) {
+                    redir_err = true;
+                    break;
+                }
+                redir_path = raw[ai + 1];
+                skip_next = true;
+                continue;
+            }
+            if (clean_n < clean.len) {
+                clean[clean_n] = a;
+                clean_n += 1;
+            }
+        }
+        if (redir_err) {
+            zos.printf("sh: syntax error: missing redirect target\n", .{});
+            continue;
+        }
+        const argv = clean[0..clean_n];
         if (argv.len == 0) continue;
 
         const cmd = argv[0];
@@ -34,11 +70,13 @@ export fn main() i32 {
                 \\commands: ls [-l] [dir]  cat <file>  echo <text>  ps  uname
                 \\          sleep <sec>  hello  forkdemo  wc [-c|-l|-w]  cdemo
                 \\          ifconfig  ping <ip> [n]  curl http://host[:port]/path
-                \\          beep [hz] [ms]  music
+                \\          beep [hz] [ms]  music  play <file.wav>
+                \\files:    mkdir <dir>  rm [-d] <path>  df
+                \\          echo text > file  echo more >> file  (ext2 磁盘 /mnt)
                 \\perms:    id  whoami  su <user>  chmod <octal> <file>
                 \\          chown <user> <file>
                 \\builtins: cd <dir>  pwd  help  exit
-                \\note: 10.0.2.2 = 宿主机（QEMU user 网络）
+                \\note: 10.0.2.2 = 宿主机（QEMU user 网络）；/mnt = ext2 磁盘
                 \\
             , .{});
             continue;
@@ -135,7 +173,19 @@ export fn main() i32 {
             continue;
         }
         if (pid == 0) {
-            // 子进程：执行命令（失败则退出）
+            // 子进程：先装好重定向（fd1 → 文件），再执行命令（失败则退出）
+            if (redir_path) |rp| {
+                const flags: i32 = zos.O_WRONLY | zos.O_CREAT |
+                    (if (redir_append) @as(i32, 0) else zos.O_TRUNC);
+                const rfd = zos.open(rp, flags);
+                if (rfd < 0) {
+                    zos.printf("sh: {s}: cannot open for write\n", .{rp});
+                    zos.exit(1);
+                }
+                if (redir_append) _ = zos.lseek(@intCast(rfd), 0, 2); // >> 从尾部续写
+                _ = zos.dup2(@intCast(rfd), 1);
+                if (rfd != 1) _ = zos.close(@intCast(rfd));
+            }
             const r = zos.execve(full, argv);
             zos.printf("sh: {s}: not found ({d})\n", .{ full, r });
             zos.exit(127);

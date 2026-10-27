@@ -213,7 +213,10 @@ fn pressKey(k: u8) void {
         'N' => {
             if (fresh) {
                 acc = -acc;
-                if (!isFinite(acc)) is_error = true;
+                if (!isFinite(acc)) {
+                    is_error = true;
+                    win.sound(5);
+                }
             } else if (entry_len + 1 < entry.len) {
                 var i = entry_len;
                 while (i > 0) {

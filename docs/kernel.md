@@ -188,7 +188,7 @@ initrd 的间隙、MMIO 洞）时会"跨界硬拼"出不连续的序列，内核
   先从页表查出物理帧，再经直接映射区写入——不必切 CR3。
   execve 摆 argv（`proc.writeUser`）同款思路。
 
-## 5. 文件系统：tarfs.zig + vfs.zig
+## 5. 文件系统：tarfs.zig + ext2.zig + vfs.zig
 
 ### 5.1 tarfs —— ustar 内存盘
 
@@ -211,6 +211,7 @@ initrd 的间隙、MMIO 洞）时会"跨界硬拼"出不连续的序列，内核
 | 0 | `/`（虚拟根） |
 | 1 | `/dev/console`（字符设备，内核特判） |
 | 2..N+1 | tarfs 节点（tarfs 下标 = vfs 编号 − 2） |
+| 1024+ino | ext2 节点（挂载于 /mnt，ino = ext2 inode 号） |
 
 - `normalizePath`：合并 cwd、消解 `.`/`..`，输出规范路径
   （长度上限 256，超长返回 null）——chdir 与 resolve 共用；
@@ -218,7 +219,22 @@ initrd 的间隙、MMIO 洞）时会"跨界硬拼"出不连续的序列，内核
 - `read`：根=EISDIR；console=行缓冲阻塞读（tty）；
   文件=内存切片 memcpy + EOF 语义；
 - `write`：只有 console 可写，其余 EROFS（只读文件系统）；
-- `listDir`：回调式遍历目录孩子（getdents64 与内核列目录共用）。
+- `listDir`：回调式遍历目录孩子（getdents64 与内核列目录共用）；
+- **挂载**：`mountMatch` 对规范化路径做挂载点前缀匹配，/mnt 与
+  /mnt/** 落到 ext2（mkdir/unlink/rmdir/chmod/chown 同样分发，
+  ext2 侧真正落盘）——详见 [fs.md](fs.md)。
+
+### 5.3 ata.zig + ext2.zig —— 真磁盘文件系统（读 + 写）
+
+- `ata.zig`：ATA PIO 块设备驱动（IDENTIFY 探测、LBA28 扇区读写、
+  BSY/DRQ 轮询握手、FLUSH CACHE）——文件系统的"底盘"；
+- `ext2.zig`：完整 ext2：超级块/组描述符解析、位图分配（balloc/
+  ialloc 及一致性的四处回写）、一至三重间接块映射、目录项
+  插入/删除（rec_len 合并）、读/写/截断；24 块直接映射缓存，
+  写穿透 + "禁止跨 blockPtr 持有切片"纪律；
+- 挂载：`ata.init()` + `ext2.mount()` + `vfs.mountExt2("/mnt")`，
+  失败不致命（无盘继续用 tarfs）；
+- 布局图、写路径走读、e2fsck/debugfs 校验方法：**[fs.md](fs.md)**。
 
 ## 6. 进程与调度（proc.zig）
 

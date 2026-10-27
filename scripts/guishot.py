@@ -157,22 +157,25 @@ def type_text(s):
 
 def open_menu_item(item_y, name):
     click(30, 466)           # ZOS 按钮
-    click(40, item_y)        # 菜单项（gui.zig menuRect 的条目纵坐标）
+    # 菜单项：item_y 是行顶（gui.zig menuRect 每项 18px）——点行中央，
+    # 避开相对位移累积的 ±1px 与菜单 3px 内边距死区
+    click(40, item_y + 9)
     time.sleep(0.3)
     print("open:", name)
 
 
-# 菜单条目纵坐标（menuRect 顶 275 + 3 起，每项 18px、分隔 5px；
-# "3D Demos" 在 Minesweeper 之后——增删菜单项记得同步这里）
+# 菜单条目纵坐标（menuRect 顶 = TB_Y-menuHeight-3，每项 18px、分隔 5px；
+# Control Panel 在 Minesweeper 之后——增删菜单项记得同步这里）
 MENU = {
-    "files": 287,
-    "note": 305,
-    "term": 323,
-    "paint": 341,
-    "calc": 359,
-    "mine": 377,
-    "gl": 395,
-    "about": 418,
+    "files": 260,
+    "note": 278,
+    "term": 296,
+    "paint": 314,
+    "calc": 332,
+    "mine": 350,
+    "cp": 368,
+    "gl": 386,
+    "about": 409,
 }
 
 

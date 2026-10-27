@@ -30,6 +30,7 @@ const font = @import("font.zig");
 const tty = @import("tty.zig");
 const apps = @import("apps.zig");
 const winsys = @import("winsys.zig");
+const vfs = @import("vfs.zig");
 
 pub const SCR_W: i32 = 640;
 pub const SCR_H: i32 = 480;
@@ -71,9 +72,32 @@ var mouse_y: i32 = 200;
 var left_down = false;
 var right_down = false;
 var drag: ?struct { idx: usize, offx: i32, offy: i32 } = null;
+/// 边缘缩放拖拽：按住的边（L/R/B 位或）+ 起始几何 + 起始鼠标位置
+var resize_drag: ?struct { idx: usize, edges: u3, mx: i32, my: i32, r: Rect } = null;
+/// 缩放拖拽的目标几何（幽灵框；null = 无）
+var ghost_rect: ?struct { idx: usize, rect: Rect } = null;
 /// 鼠标捕获：左键按下落在哪个窗口的客户区，按住期间的移动就归它
 /// （经典 GUI 捕获语义——画图时划出窗口也继续画）
 var app_capture: ?usize = null;
+
+/// 双击识别：350ms 内、同窗口、±4px 内的第二次左键按下 → EV_DBL
+var last_click_tick: u64 = 0;
+var last_click_win: usize = 0xFFFF;
+var last_click_x: i32 = 0;
+var last_click_y: i32 = 0;
+
+/// 键盘焦点窗口（= 活动窗口 topVisible 的镜像；变化时发激活/失活事件）
+var focused_win: usize = 0;
+const DBL_TICKS: u64 = 50; // 500ms（与 Windows 缺省一致；100Hz tick）
+const DBL_SLOP: i32 = 4;
+
+/// 屏保：无输入 idle_ticks 秒后启动；任意输入退出
+var last_input_tick: u64 = 0;
+var saver_on = false;
+var saver_timeout_s: u32 = 90; // 0 = 禁用（/etc/zos.conf 可调）
+const Star = struct { x: i32, y: i32, sp: i32 };
+var stars: [48]Star = undefined;
+var saver_frame: u32 = 0;
 
 // 任务栏
 var btn_pressed = false; // ZOS 按钮（菜单打开期间保持按下）
@@ -88,6 +112,117 @@ const MENU_W: i32 = 148;
 const ITEM_H: i32 = 18;
 const SEP_H: i32 = 5;
 const MENU_PAD: i32 = 3;
+
+// ---------------- 窗口系统菜单（标题栏左盒弹出） ----------------
+
+var sysmenu_open = false;
+var sysmenu_win: usize = 0;
+var sysmenu_hover: i8 = -1;
+
+const SysItem = enum { restore, minimize, maximize, sep, close };
+const sysmenu_items = [_]SysItem{ .restore, .minimize, .maximize, .sep, .close };
+const SYSMENU_W: i32 = 108;
+
+fn sysMenuItemEnabled(it: SysItem) bool {
+    const w = &windows[sysmenu_win];
+    return switch (it) {
+        .restore => w.maximized,
+        .minimize, .close => true,
+        .maximize => w.resizable and !w.maximized,
+        .sep => false,
+    };
+}
+
+fn sysMenuHeight() i32 {
+    var h: i32 = MENU_PAD * 2;
+    for (sysmenu_items) |it| {
+        h += if (it == .sep) SEP_H else ITEM_H;
+    }
+    return h;
+}
+
+fn sysMenuRect() Rect {
+    const w = &windows[sysmenu_win];
+    return mkRect(w.x + 4, w.y + 26, SYSMENU_W, sysMenuHeight());
+}
+
+fn hitSysMenuItem() i8 {
+    const m = sysMenuRect();
+    if (!inRect(mouse_x, mouse_y, m)) return -1;
+    var y = m.y + MENU_PAD;
+    for (sysmenu_items, 0..) |it, i| {
+        const hh: i32 = if (it == .sep) SEP_H else ITEM_H;
+        if (mouse_y >= y and mouse_y < y + hh) return if (it == .sep) -1 else @intCast(i);
+        y += hh;
+    }
+    return -1;
+}
+
+fn paintSysMenu() void {
+    const m = sysMenuRect();
+    fillRect(mkRect(m.x + 2, m.y + 2, m.w, m.h), pal.shadow);
+    fillRect(m, pal.white);
+    rectStroke(m, pal.black);
+    var y = m.y + MENU_PAD;
+    for (sysmenu_items, 0..) |it, i| {
+        if (it == .sep) {
+            hline(m.x + 2, m.x + m.w - 3, y + 2, pal.shadow);
+            hline(m.x + 2, m.x + m.w - 3, y + 3, pal.white);
+            y += SEP_H;
+            continue;
+        }
+        const enabled = sysMenuItemEnabled(it);
+        const hov = sysmenu_hover == @as(i8, @intCast(i)) and enabled;
+        if (hov) fillRect(mkRect(m.x + 1, y, m.w - 2, ITEM_H), pal.navy);
+        const label: []const u8 = switch (it) {
+            .restore => "Restore",
+            .minimize => "Minimize",
+            .maximize => "Maximize",
+            .close => "Close    Alt+F4",
+            .sep => "",
+        };
+        const fg: u32 = if (hov) pal.white else if (enabled) pal.black else pal.shadow;
+        text(m.x + 8, y + 1, label, fg);
+        y += ITEM_H;
+    }
+}
+
+fn closeSysMenu() void {
+    if (!sysmenu_open) return;
+    sysmenu_open = false;
+    sysmenu_hover = -1;
+    const m = sysMenuRect();
+    addDamage(mkRect(m.x, m.y, m.w + 2, m.h + 2)); // 含 2px 投影
+}
+
+fn sysMenuAction(idx: usize) void {
+    const wi = sysmenu_win;
+    closeSysMenu();
+    switch (sysmenu_items[idx]) {
+        .restore => {
+            if (windows[wi].maximized) toggleMaximize(wi) else raiseWindow(wi);
+        },
+        .minimize => minimizeWindow(wi),
+        .maximize => toggleMaximize(wi),
+        .close => closeWindowByUser(wi),
+        .sep => {},
+    }
+}
+
+/// 关闭盒/系统菜单 Close 共用：用户窗口走关闭协议，内核窗口直接关
+fn closeWindowByUser(wi: usize) void {
+    const w = &windows[wi];
+    if (w.kind == .user) {
+        addDamage(winRect(w));
+        w.visible = false;
+        w.opened = false;
+        addDamage(taskbarRect());
+        winsys.requestClose(wi);
+        syncActivation();
+    } else {
+        closeWin(w);
+    }
+}
 
 /// 菜单项动作：内核窗口直接打开；用户应用经 winsys spawn 进程
 const MenuAction = enum { about, terminal, launch, none };
@@ -105,6 +240,7 @@ const menu_items = [_]MenuItem{
     .{ .label = "Paint", .enabled = true, .act = .launch, .path = "/bin/paint" },
     .{ .label = "Calculator", .enabled = true, .act = .launch, .path = "/bin/calc" },
     .{ .label = "Minesweeper", .enabled = true, .act = .launch, .path = "/bin/mine" },
+    .{ .label = "Control Panel", .enabled = true, .act = .launch, .path = "/bin/cp" },
     .{ .label = "3D Demos", .enabled = true, .act = .launch, .path = "/bin/glview" },
     .{ .label = "", .enabled = false, .sep = true },
     .{ .label = "About ZOS...", .enabled = true, .act = .about },
@@ -120,7 +256,8 @@ pub const WinKind = enum { about, terminal, user };
 
 /// 用户窗口在窗口表里的起始槽位（前面留给内核窗口）
 pub const USER_SLOT_BASE: usize = 2;
-const WIN_SLOTS: usize = 8;
+const WIN_SLOTS: usize = 12; // 2 内核 + 10 用户（窗口槽动态化的容量上限）
+const MAX_USER_WINDOWS = WIN_SLOTS - USER_SLOT_BASE;
 
 pub const Win = struct {
     visible: bool = false,
@@ -135,6 +272,10 @@ pub const Win = struct {
     owner_pid: u32 = 0, // user 窗口：属主进程
     title_buf: [24]u8 = @splat(0),
     title_len: usize = 0,
+    // ---- 最大化 / 缩放 ----
+    resizable: bool = false, // 有最大化盒、可拖边框缩放
+    maximized: bool = false,
+    restore_r: Rect = .{ .x = 0, .y = 0, .w = 292, .h = 150 }, // 最大化前的几何
 
     pub fn title(self: *const Win) []const u8 {
         return self.title_buf[0..self.title_len];
@@ -153,8 +294,8 @@ pub const Win = struct {
 /// 窗口表：每类内核应用一个单例窗口；[USER_SLOT_BASE..] 给 winsys
 var windows = [_]Win{
     .{ .kind = .about, .w = 292, .h = 150, .home_x = 174, .home_y = 150 },
-    .{ .kind = .terminal, .w = 584, .h = 272, .home_x = 28, .home_y = 52 },
-    .{}, .{}, .{}, .{}, .{}, .{},
+    .{ .kind = .terminal, .w = 584, .h = 272, .home_x = 28, .home_y = 52, .resizable = true },
+    .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{},
 };
 
 fn setKernelTitle(wi: usize, s: []const u8) void {
@@ -181,13 +322,35 @@ pub fn windowByKind(k: WinKind) *Win {
 fn raiseWindow(wi: usize) void {
     var i: usize = 0;
     while (i < zorder.len and zorder[i] != wi) i += 1;
-    if (i >= zorder.len - 1) return; // 已在顶层
+    if (i >= zorder.len - 1) {
+        syncActivation();
+        return; // 已在顶层
+    }
     while (i < zorder.len - 1) : (i += 1) zorder[i] = zorder[i + 1];
     zorder[zorder.len - 1] = wi;
     addDamage(SCREEN);
+    syncActivation();
 }
 
-/// 最顶层可见窗口的下标（活动窗口）
+/// 键盘焦点跟随 z 序顶端：变化时给用户窗口发 ACTIVATE/DEACTIVATE
+/// （应用据此显示/隐藏插入光标）。内核窗口（终端）不收事件。
+fn syncActivation() void {
+    const top = topVisible();
+    if (top == focused_win) return;
+    if (focused_win >= USER_SLOT_BASE) {
+        pushUserEvent(focused_win, .{ .kind = winsys.EV_DEACTIVATE, .x = 0, .y = 0, .code = 0, ._pad = 0, ._pad2 = 0 });
+    }
+    focused_win = top;
+    if (focused_win >= USER_SLOT_BASE) {
+        pushUserEvent(focused_win, .{ .kind = winsys.EV_ACTIVATE, .x = 0, .y = 0, .code = 0, ._pad = 0, ._pad2 = 0 });
+    }
+}
+
+fn pushUserEvent(wi: usize, ev: winsys.WinEvent) void {
+    if (wi < USER_SLOT_BASE or wi >= windows.len) return;
+    winsys.push(wi, ev);
+}
+
 fn topVisible() usize {
     var i = zorder.len;
     while (i > 0) {
@@ -207,7 +370,47 @@ fn showWindow(wi: usize) void {
 pub fn closeWin(w: *Win) void {
     addDamage(winRect(w));
     w.visible = false;
+    w.maximized = false;
     addDamage(taskbarRect());
+    syncActivation();
+}
+
+/// 最大化/还原切换（系统菜单、最大化盒共用）。
+/// 用户窗口：表面随客户区重分配（EV_RESIZE 让应用重画）；
+/// 内核窗口（终端）：paint 按客户区尺寸自适应行列。
+fn toggleMaximize(wi: usize) void {
+    const w = &windows[wi];
+    addDamage(winRect(w));
+    if (w.maximized) {
+        w.x = w.restore_r.x;
+        w.y = w.restore_r.y;
+        w.w = w.restore_r.w;
+        w.h = w.restore_r.h;
+        w.maximized = false;
+        if (w.kind == .user) {
+            _ = winsys.resizeSlot(wi, w.w - 6, w.h - 31);
+        }
+    } else {
+        w.restore_r = .{ .x = w.x, .y = w.y, .w = w.w, .h = w.h };
+        w.x = 0;
+        w.y = 0;
+        w.w = SCR_W;
+        w.h = TB_Y;
+        w.maximized = true;
+        if (w.kind == .user) {
+            _ = winsys.resizeSlot(wi, SCR_W - 6, TB_Y - 31);
+        }
+    }
+    addDamage(SCREEN);
+}
+
+/// 最小化（系统菜单/任务栏按钮）：藏窗口，焦点交给下一个
+fn minimizeWindow(wi: usize) void {
+    const w = &windows[wi];
+    addDamage(winRect(w));
+    w.visible = false;
+    addDamage(taskbarRect());
+    syncActivation();
 }
 
 /// 开始菜单 / 任务栏的入口（内核窗口）
@@ -232,10 +435,12 @@ pub fn createUserWindow(widx: usize, cw: i32, ch: i32, pid: u32, title: []const 
     w.title_len = n;
     w.kind = .user;
     w.owner_pid = pid;
+    w.resizable = true;
+    w.maximized = false;
     w.w = cw + 6;
     w.h = ch + 31;
-    w.x = 24 + @as(i32, @intCast(widx)) * 36;
-    w.y = 14 + @as(i32, @intCast(widx)) * 30;
+    w.x = 24 + @as(i32, @intCast(widx)) * 24;
+    w.y = 14 + @as(i32, @intCast(widx)) * 22;
     showWindow(wi);
 }
 
@@ -245,10 +450,16 @@ pub fn destroyUserWindow(wi: usize) void {
     const w = &windows[wi];
     if (app_capture == wi) app_capture = null;
     if (drag != null and drag.?.idx == wi) drag = null;
+    if (resize_drag) |rd| {
+        if (rd.idx == wi) resize_drag = null;
+    }
+    ghost_rect = null;
     closeWin(w);
     w.opened = false;
     w.kind = .user;
     w.owner_pid = 0;
+    w.resizable = false;
+    syncActivation();
 }
 
 /// win_present：整块客户区记脏（重绘在 IRQ0 里做）
@@ -257,7 +468,35 @@ pub fn damageUserWindow(wi: usize) void {
     if (w.visible) addDamage(clientRect(w));
 }
 
-/// 提升某进程名下所有可见窗口（菜单单击已运行应用 = 切到前台）
+/// win_title：改标题（标题栏 + 任务栏按钮都记脏）
+pub fn setWindowTitle(wi: usize, title: []const u8) void {
+    if (wi >= windows.len) return;
+    const w = &windows[wi];
+    const n = @min(title.len, w.title_buf.len);
+    @memcpy(w.title_buf[0..n], title[0..n]);
+    w.title_len = n;
+    if (w.visible) {
+        addDamage(titleRect(w));
+        addDamage(taskbarRect());
+    }
+}
+
+/// 表面重分配完成（winsys.resizeSlot）：外框跟着新客户区走
+pub fn resizeUserWindow(wi: usize, cw: i32, ch: i32) void {
+    if (wi < USER_SLOT_BASE or wi >= windows.len) return;
+    const w = &windows[wi];
+    addDamage(winRect(w));
+    w.w = cw + 6;
+    w.h = ch + 31;
+    if (w.maximized) {
+        // 最大化状态下的 resize 来自 WM 自己：恢复基准也要跟上
+        w.restore_r.w = cw + 6;
+        w.restore_r.h = ch + 31;
+    }
+    addDamage(winRect(w));
+}
+
+/// 提升某进程名下所有可见窗口（保留：进程管理工具用）
 pub fn raiseWindowsOfPid(pid: u32) void {
     for (&windows, 0..) |*w, wi| {
         if (w.kind == .user and w.owner_pid == pid and w.visible) raiseWindow(wi);
@@ -412,6 +651,37 @@ pub fn textBold(x: i32, y: i32, s: []const u8, fg: u32) void {
     text(x + 1, y, s, fg);
 }
 
+/// 多档字号：8x16 基底 × 整数最近邻（1..4）——About 大标题等
+pub fn textScaled(x: i32, y: i32, s: []const u8, fg: u32, scale: i32) void {
+    const sc: u5 = @intCast(@max(1, @min(scale, 4)));
+    var cx = x;
+    for (s) |ch| {
+        const idx: usize = if (ch >= font.FIRST and ch < font.FIRST + font.COUNT)
+            ch - font.FIRST
+        else
+            '?' - font.FIRST;
+        const g = &font.glyphs[idx];
+        for (g, 0..) |row, ry| {
+            if (row == 0) continue;
+            var b = row;
+            var rx: i32 = 0;
+            while (b != 0) : (b <<= 1) {
+                if (b & 0x80 != 0) {
+                    var yy: i32 = 0;
+                    while (yy < sc) : (yy += 1) {
+                        var xx: i32 = 0;
+                        while (xx < sc) : (xx += 1) {
+                            setPx(cx + rx * sc + xx, y + @as(i32, @intCast(ry)) * sc + yy, fg);
+                        }
+                    }
+                }
+                rx += 1;
+            }
+        }
+        cx += font.W * sc;
+    }
+}
+
 // ---------------- 图层几何 ----------------
 
 fn btnRect() Rect {
@@ -427,10 +697,35 @@ fn taskbarRect() Rect {
     return mkRect(0, TB_Y, SCR_W, TASKBAR_H);
 }
 
-/// 第 wi 个窗口的任务栏按钮（ZOS 按钮右侧一排；7 个正好排到时钟前）
-fn taskBtnRect(wi: usize) Rect {
+/// 第 k 个【已打开】窗口的任务栏按钮（按钮随开窗动态排列，最多
+/// TB_MAX 挤满一排；返回 null 表示窗口没有自己的按钮）
+const TB_MAX = 7;
+fn taskBtnOrdinal(wi: usize) ?usize {
+    var ord: usize = 0;
+    for (&windows, 0..) |*w, k| {
+        if (!w.opened) continue;
+        if (k == wi) return ord;
+        ord += 1;
+    }
+    return null;
+}
+
+fn taskBtnRect(ord: usize) Rect {
     const x0 = btnRect().x + btnRect().w + 22;
-    return mkRect(x0 + @as(i32, @intCast(wi)) * 66, TB_Y + 3, 64, TASKBAR_H - 6);
+    return mkRect(x0 + @as(i32, @intCast(ord)) * 66, TB_Y + 3, 64, TASKBAR_H - 6);
+}
+
+/// 命中测试：屏幕坐标 → 拥有该按钮的窗口下标（无则 null）
+fn taskBtnHit(x: i32, y: i32) ?usize {
+    if (y < TB_Y + 3 or y >= TB_Y + 3 + TASKBAR_H - 6) return null;
+    var ord: usize = 0;
+    for (&windows, 0..) |*w, wi| {
+        if (!w.opened) continue;
+        if (ord >= TB_MAX) break;
+        if (inRect(x, y, taskBtnRect(ord))) return wi;
+        ord += 1;
+    }
+    return null;
 }
 
 fn menuHeight() i32 {
@@ -457,8 +752,31 @@ fn sysBoxRect(w: *const Win) Rect {
     return mkRect(w.x + 7, w.y + 5, 18, 18);
 }
 
+/// 最大化盒（关闭盒左边；可缩放窗口才有）
+fn maxBoxRect(w: *const Win) Rect {
+    return mkRect(w.x + w.w - 7 - 18 - 20, w.y + 5, 18, 18);
+}
+
 fn closeBoxRect(w: *const Win) Rect {
     return mkRect(w.x + w.w - 7 - 18, w.y + 5, 18, 18);
+}
+
+/// resize 边缘带：窗口矩形外缘 5px（上边不缩放——那是标题栏拖动）
+const EDGE_NONE: u3 = 0;
+const EDGE_L: u3 = 1;
+const EDGE_R: u3 = 2;
+const EDGE_B: u3 = 4;
+
+fn edgeAt(w: *const Win, x: i32, y: i32) u3 {
+    if (!w.resizable) return EDGE_NONE;
+    const r = winRect(w);
+    if (!inRect(x, y, mkRect(r.x - 4, r.y, r.w + 8, r.h + 4))) return EDGE_NONE;
+    if (y < r.y + 24) return EDGE_NONE; // 顶部交给标题栏
+    var e: u3 = 0;
+    if (x < r.x + 5) e |= EDGE_L;
+    if (x >= r.x + r.w - 5) e |= EDGE_R;
+    if (y >= r.y + r.h - 5) e |= EDGE_B;
+    return e;
 }
 
 /// 客户区：标题栏以下、外框以内（apps.zig 的画布）
@@ -470,10 +788,200 @@ fn cursorRect() Rect {
     return mkRect(mouse_x, mouse_y, 12, 15);
 }
 
-// ---------------- 图层绘制 ----------------
+// ---------------- 桌面图标 ----------------
+
+/// 图标动作：内核窗口 / spawn 用户程序
+const IconAction = enum { terminal, launch };
+const DeskIcon = struct {
+    label: []const u8,
+    act: IconAction,
+    path: []const u8 = "",
+};
+const desk_icons = [_]DeskIcon{
+    .{ .label = "Files", .act = .launch, .path = "/bin/fm" },
+    .{ .label = "Notepad", .act = .launch, .path = "/bin/note" },
+    .{ .label = "Paint", .act = .launch, .path = "/bin/paint" },
+    .{ .label = "Mines", .act = .launch, .path = "/bin/mine" },
+    .{ .label = "Calc", .act = .launch, .path = "/bin/calc" },
+    .{ .label = "Control Panel", .act = .launch, .path = "/bin/cp" },
+    .{ .label = "Terminal", .act = .terminal },
+    .{ .label = "3D Demos", .act = .launch, .path = "/bin/glview" },
+};
+const ICON_W: i32 = 76;
+const ICON_STEP_Y: i32 = 76;
+const ICON_COL_STEP: i32 = 78;
+const ICON_AREA_X: i32 = 8;
+const ICON_AREA_Y: i32 = 8;
+
+/// 图标格（左上原点，竖排再换列）
+fn iconRect(i: usize) Rect {
+    const col: i32 = @intCast(i / 6);
+    const row: i32 = @intCast(i % 6);
+    return mkRect(ICON_AREA_X + col * ICON_COL_STEP, ICON_AREA_Y + row * ICON_STEP_Y, ICON_W, 64);
+}
+
+var icon_sel: i8 = -1; // 单击选中的图标（高亮）
+
+/// 命中桌面图标；无命中返回 -1
+fn hitIcon(x: i32, y: i32) i8 {
+    for (desk_icons, 0..) |_, i| {
+        if (inRect(x, y, iconRect(i))) return @intCast(i);
+    }
+    return -1;
+}
+
+fn launchIcon(i: usize) void {
+    const ic = desk_icons[i];
+    switch (ic.act) {
+        .terminal => openApp(.terminal),
+        .launch => winsys.launchApp(ic.path),
+    }
+}
+
+// ---------------- 壁纸 ----------------
+
+var wallpaper: u32 = 0; // 桌面底色（init 里按帧缓冲格式打包）
 
 fn paintDesktop() void {
-    fillRect(SCREEN, pal.desktop);
+    fillRect(SCREEN, wallpaper);
+    // 图标（16 色系统调色板风格：黄色文件夹/纸页 + 白描边，下面白字标签）
+    for (desk_icons, 0..) |ic, i| {
+        const r = iconRect(i);
+        const sel = icon_sel == @as(i8, @intCast(i));
+        if (sel) {
+            // Win95 式选中：标签底染藏青 + 图标蒙一层藏青点阵（这里用半调方块）
+            fillRect(mkRect(r.x, r.y, ICON_W, 60), pal.navy);
+        }
+        drawDeskGlyph(r.x + (ICON_W - 32) / 2, r.y + 4, i);
+        const lw: i32 = @intCast(ic.label.len * 8);
+        const lx = r.x + @divTrunc(ICON_W - lw, 2);
+        if (sel) {
+            text(lx, r.y + 44, ic.label, pal.white);
+        } else {
+            text(lx + 1, r.y + 45, ic.label, pal.black);
+            text(lx, r.y + 44, ic.label, pal.white);
+        }
+    }
+}
+
+/// 桌面图标位图（32x32 区域内画一个 16 色小图）：
+/// 0=Files 文件夹 1..4=文档/画板/地雷/计算器（简化同款纸页+色条）
+fn drawDeskGlyph(x: i32, y: i32, i: usize) void {
+    switch (i) {
+        0 => { // 文件夹
+            fillRect(mkRect(x + 6, y + 6, 10, 3), px(228, 200, 88));
+            fillRect(mkRect(x + 2, y + 9, 28, 17), px(255, 224, 96));
+            hline(x + 2, x + 29, y + 9, pal.black);
+            vline(x + 2, y + 9, y + 25, pal.black);
+            vline(x + 29, y + 9, y + 25, pal.black);
+            hline(x + 2, x + 29, y + 26, pal.black);
+        },
+        1 => { // Notepad 纸页
+            drawPageGlyph(x, y, px(255, 255, 255));
+        },
+        2 => { // Paint 调色板
+            ellipseFill(mkRect(x + 4, y + 6, 26, 22), px(255, 224, 96));
+            fillRect(mkRect(x + 10, y + 11, 5, 5), px(255, 0, 0));
+            fillRect(mkRect(x + 18, y + 11, 5, 5), px(0, 128, 0));
+            fillRect(mkRect(x + 10, y + 19, 5, 5), px(0, 0, 255));
+            fillRect(mkRect(x + 18, y + 19, 5, 5), pal.black);
+        },
+        3 => { // Mine 地雷
+            fillRect(mkRect(x + 12, y + 8, 8, 18), pal.black);
+            fillRect(mkRect(x + 8, y + 12, 16, 10), pal.black);
+            fillRect(mkRect(x + 14, y + 4, 1, 4), pal.black);
+            fillRect(mkRect(x + 12, y + 12, 3, 3), pal.white);
+        },
+        4 => { // Calc 计算器
+            fillRect(mkRect(x + 8, y + 4, 18, 26), px(224, 224, 224));
+            fillRect(mkRect(x + 10, y + 6, 14, 6), px(128, 160, 128));
+            for (0..3) |rr| {
+                for (0..3) |cc| {
+                    fillRect(mkRect(x + 10 + @as(i32, @intCast(cc)) * 5, y + 15 + @as(i32, @intCast(rr)) * 5, 4, 4), pal.shadow);
+                }
+            }
+        },
+        5 => { // Control Panel 滑杆面板
+            fillRect(mkRect(x + 5, y + 5, 24, 24), px(224, 224, 224));
+            hline(x + 8, x + 26, y + 12, pal.shadow);
+            hline(x + 8, x + 26, y + 20, pal.shadow);
+            fillRect(mkRect(x + 12, y + 9, 5, 7), pal.navy);
+            fillRect(mkRect(x + 20, y + 17, 5, 7), px(255, 0, 0));
+        },
+        6 => { // Terminal 屏幕窗口
+            fillRect(mkRect(x + 3, y + 7, 26, 18), pal.black);
+            fillRect(mkRect(x + 5, y + 9, 22, 12), px(0, 64, 0));
+            fillRect(mkRect(x + 7, y + 11, 10, 2), px(0, 192, 0));
+            fillRect(mkRect(x + 7, y + 15, 14, 2), px(0, 192, 0));
+        },
+        else => { // 3D Demos 立方体
+            line3(x + 16, y + 5, x + 27, y + 11);
+            line3(x + 16, y + 5, x + 5, y + 11);
+            line3(x + 5, y + 11, x + 5, y + 23);
+            line3(x + 27, y + 11, x + 27, y + 23);
+            line3(x + 5, y + 23, x + 16, y + 29);
+            line3(x + 27, y + 23, x + 16, y + 29);
+            line3(x + 16, y + 5, x + 16, y + 17);
+            line3(x + 5, y + 11, x + 16, y + 17);
+            line3(x + 27, y + 11, x + 16, y + 17);
+            line3(x + 16, y + 17, x + 16, y + 29);
+        },
+    }
+}
+
+fn drawPageGlyph(x: i32, y: i32, paper: u32) void {
+    fillRect(mkRect(x + 7, y + 4, 18, 26), paper);
+    rectStroke(mkRect(x + 7, y + 4, 18, 26), pal.black);
+    for (0..4) |ln| {
+        hline(x + 10, x + 21, y + 9 + @as(i32, @intCast(ln)) * 5, pal.shadow);
+    }
+}
+
+/// 1px 空心矩形（图标描边用）
+fn rectStroke(r: Rect, c: u32) void {
+    hline(r.x, r.x + r.w - 1, r.y, c);
+    hline(r.x, r.x + r.w - 1, r.y + r.h - 1, c);
+    vline(r.x, r.y, r.y + r.h - 1, c);
+    vline(r.x + r.w - 1, r.y, r.y + r.h - 1, c);
+}
+
+fn line3(x0: i32, y0: i32, x1: i32, y1: i32) void {
+    var x = x0;
+    var y = y0;
+    const dx: i32 = @intCast(@abs(x1 - x0));
+    const dy: i32 = -@as(i32, @intCast(@abs(y1 - y0)));
+    const sx: i32 = if (x0 < x1) 1 else -1;
+    const sy: i32 = if (y0 < y1) 1 else -1;
+    var err = dx + dy;
+    while (true) {
+        setPx(x, y, pal.black);
+        if (x == x1 and y == y1) break;
+        const e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+/// 实心椭圆（扫描线，图标上色用）
+fn ellipseFill(r: Rect, c: u32) void {
+    const cx: f32 = @as(f32, @floatFromInt(r.x)) + @as(f32, @floatFromInt(r.w)) / 2.0 - 0.5;
+    const cy: f32 = @as(f32, @floatFromInt(r.y)) + @as(f32, @floatFromInt(r.h)) / 2.0 - 0.5;
+    const rx: f32 = @as(f32, @floatFromInt(r.w)) / 2.0;
+    const ry: f32 = @as(f32, @floatFromInt(r.h)) / 2.0;
+    var yy = r.y;
+    while (yy < r.y + r.h) : (yy += 1) {
+        const fy = (@as(f32, @floatFromInt(yy)) - cy) / ry;
+        const t = 1.0 - fy * fy;
+        if (t <= 0) continue;
+        const half = @sqrt(t) * rx;
+        hline(@intFromFloat(cx - half), @intFromFloat(cx + half), yy, c);
+    }
 }
 
 fn paintTaskbar() void {
@@ -491,11 +999,14 @@ fn paintTaskbar() void {
     vline(b.x + b.w + 8, TB_Y + 4, TB_Y + TASKBAR_H - 5, pal.shadow);
     vline(b.x + b.w + 9, TB_Y + 4, TB_Y + TASKBAR_H - 5, pal.white);
 
-    // 窗口按钮：打开过的窗口各占一格（Win95 式最小化/还原）
+    // 窗口按钮：打开过的窗口各占一格（Win95 式最小化/还原；动态排列）
     const top = topVisible();
+    var ord: usize = 0;
     for (&windows, 0..) |*w, wi| {
         if (!w.opened) continue;
-        const tb = taskBtnRect(wi);
+        if (ord >= TB_MAX) break;
+        const tb = taskBtnRect(ord);
+        ord += 1;
         fillRect(tb, pal.chrome);
         const active_btn = w.visible and top == wi;
         bevel2(tb, !active_btn); // 活动窗口的按钮呈按下状
@@ -543,7 +1054,7 @@ fn paintMenu() void {
     }
 }
 
-/// 窗口外框（WM 拥有的部分）：边框/标题栏/系统菜单盒/关闭盒。
+/// 窗口外框（WM 拥有的部分）：边框/标题栏/系统菜单盒/最大化盒/关闭盒。
 /// 活动窗口标题栏藏青；非活动窗口灰色（键盘焦点/激活状态的视觉线索）。
 /// 客户区：内核窗口由 apps.zig 画；用户窗口 blit 共享表面（winsys）。
 fn paintWindow(wi: usize, w: *const Win) void {
@@ -553,11 +1064,31 @@ fn paintWindow(wi: usize, w: *const Win) void {
     const tr = titleRect(w);
     fillRect(tr, if (topVisible() == wi) pal.navy else pal.chrome);
 
-    // 系统菜单盒（左，横杠图标）——3.1 的装饰，单击无动作
+    // 系统菜单盒（左，横杠图标）
     const sb = sysBoxRect(w);
     fillRect(sb, pal.chrome);
     bevel1(sb, true);
     fillRect(mkRect(sb.x + 4, sb.y + 8, 10, 2), pal.black);
+
+    // 最大化盒（▲/还原 双三角；不可缩放窗口不画）
+    if (w.resizable) {
+        const mb = maxBoxRect(w);
+        fillRect(mb, pal.chrome);
+        bevel1(mb, true);
+        const mx = mb.x + 9;
+        const my = mb.y + 8;
+        if (!w.maximized) {
+            fillRect(mkRect(mx - 1, my - 1, 3, 1), pal.black);
+            fillRect(mkRect(mx - 2, my, 5, 1), pal.black);
+            fillRect(mkRect(mx - 3, my + 1, 7, 1), pal.black);
+            fillRect(mkRect(mx - 3, my + 2, 7, 2), pal.black);
+        } else {
+            // 还原：两个错位小窗
+            rectStroke(mkRect(mx - 4, my - 1, 7, 6), pal.black);
+            rectStroke(mkRect(mx - 2, my + 1, 7, 6), pal.black);
+            fillRect(mkRect(mx - 1, my, 5, 1), pal.chrome);
+        }
+    }
 
     // 关闭盒（右，▼ 图标）
     const cb = closeBoxRect(w);
@@ -585,6 +1116,16 @@ fn paintWindow(wi: usize, w: *const Win) void {
         }
     } else {
         apps.paintClient(w);
+    }
+
+    // resize 拖拽中的"幽灵框"：目标几何的 2px 藏青描边（拖动期间
+    // 表面不真重分配，松手才一次性 resize——预览画在最上层窗口之后）
+    if (ghost_rect) |g| {
+        if (g.idx == wi) {
+            const gr = g.rect;
+            rectStroke(mkRect(gr.x - 1, gr.y - 1, gr.w + 2, gr.h + 2), pal.navy);
+            rectStroke(mkRect(gr.x - 2, gr.y - 2, gr.w + 4, gr.h + 4), pal.navy);
+        }
     }
 }
 
@@ -646,6 +1187,16 @@ fn paintCursor() void {
 /// 空闲时是空函数（无脏区不干活）。只在 IRQ0/IRQ12/init 调用。
 pub fn repaint() void {
     if (!active) return;
+    if (saver_on) {
+        // 屏保独占整屏（进入时全屏清黑；此后只按星点小脏区动画）
+        const r = damage;
+        if (r.w <= 0 or r.h <= 0) return;
+        damage = mkRect(0, 0, 0, 0);
+        clip = r;
+        paintSaverFrame();
+        blit(r);
+        return;
+    }
     const r = damage;
     if (r.w <= 0 or r.h <= 0) return;
     damage = mkRect(0, 0, 0, 0);
@@ -657,9 +1208,61 @@ pub fn repaint() void {
     }
     paintTaskbar();
     if (menu_open) paintMenu();
+    if (sysmenu_open) paintSysMenu();
     paintCursor();
 
     blit(r);
+}
+
+// ---------------- 屏保（星场） ----------------
+
+fn saverStart() void {
+    saver_on = true;
+    saver_frame = 0;
+    var rng: u32 = 0x1234_5678;
+    for (&stars) |*s| {
+        rng = rng *% 1103515245 +% 12345;
+        s.x = @intCast((rng >> 16) % @as(u32, @intCast(SCR_W)));
+        rng = rng *% 1103515245 +% 12345;
+        s.y = @intCast((rng >> 16) % @as(u32, @intCast(TB_Y)));
+        s.sp = @intCast(1 + (rng >> 8) % 4);
+    }
+    addDamage(SCREEN);
+}
+
+fn saverStop() void {
+    saver_on = false;
+    last_input_tick = pit.ticks;
+    addDamage(SCREEN);
+}
+
+/// 每 tick 动画：星星右移（3 档速度=视差），出界回绕
+fn paintSaverFrame() void {
+    for (&stars) |*s| {
+        // 擦旧点
+        setPx(s.x, s.y, pal.black);
+        setPx(s.x + 1, s.y, pal.black);
+        s.x += s.sp;
+        if (s.x >= SCR_W) {
+            s.x = 0;
+            var rng: u32 = @truncate(pit.ticks *% 2654435761 +% @as(u32, @intCast(s.sp)));
+            rng = rng *% 1103515245 +% 12345;
+            s.y = @intCast((rng >> 8) % @as(u32, @intCast(TB_Y)));
+        }
+        const c: u32 = switch (@as(u32, @intCast(s.sp))) {
+            1 => px(96, 96, 96),
+            2 => px(160, 160, 160),
+            else => px(255, 255, 255),
+        };
+        setPx(s.x, s.y, c);
+        setPx(s.x + 1, s.y, c);
+    }
+    // 角落一行标题（暗灰，低存在感）
+    saver_frame +%= 1;
+    if (saver_frame % 100 == 0) {
+        addDamage(mkRect(SCR_W - 200, SCR_H - 40, 192, 16));
+    }
+    if (saver_frame % 100 >= 95) text(SCR_W - 196, SCR_H - 40, "ZOS -- idle", px(64, 64, 64));
 }
 
 /// 后备缓冲 → 帧缓冲：只搬运脏矩形覆盖的行
@@ -678,6 +1281,11 @@ fn blit(r: Rect) void {
 /// 鼠标相对位移（dy 已换算为屏幕方向）+ 按键位图 bit0=左 bit1=右
 pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
     if (!active) return;
+    last_input_tick = pit.ticks;
+    if (saver_on) {
+        saverStop();
+        return;
+    }
 
     addDamage(cursorRect());
     mouse_x = @max(@min(mouse_x + dx, SCR_W - 12), 0);
@@ -690,6 +1298,8 @@ pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
         w.x = @max(@min(mouse_x - d.offx, SCR_W - 24), 24 - w.w);
         w.y = @max(@min(mouse_y - d.offy, TB_Y - 24), 0);
         addDamage(winRect(w));
+    } else if (resize_drag) |*rd| {
+        updateGhost(rd);
     }
 
     if (menu_open) {
@@ -697,6 +1307,12 @@ pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
         if (h != menu_hover) {
             menu_hover = h;
             addDamage(menuRect());
+        }
+    } else if (sysmenu_open) {
+        const h = hitSysMenuItem();
+        if (h != sysmenu_hover) {
+            sysmenu_hover = h;
+            addDamage(sysMenuRect());
         }
     }
 
@@ -706,6 +1322,9 @@ pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
         if (left) {
             handlePress(mouse_x, mouse_y);
         } else {
+            if (resize_drag) |rd| {
+                finishResize(rd);
+            }
             if (app_capture) |wi| {
                 const w = &windows[wi];
                 if (w.kind == .user and w.visible) {
@@ -720,7 +1339,7 @@ pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
     }
     // 捕获期间的移动：归按下时命中的窗口（画图连续笔划；用户窗口
     // 收到的是客户区坐标，可能为负——应用自行裁剪）
-    if (left_down and drag == null) {
+    if (left_down and drag == null and resize_drag == null) {
         if (app_capture) |wi| {
             const w = &windows[wi];
             if (w.kind == .user and w.visible) {
@@ -739,17 +1358,96 @@ pub fn onMouseDelta(dx: i32, dy: i32, buttons: u3) void {
     repaint();
 }
 
+/// 缩放拖拽中：按边缘位更新幽灵框几何（min 160x80 客户区）
+fn updateGhost(rd: anytype) void {
+    const start = rd.r;
+    var x = start.x;
+    const y = start.y;
+    var ww = start.w;
+    var hh = start.h;
+    const mdx = mouse_x - rd.mx;
+    const mdy = mouse_y - rd.my;
+    if (rd.edges & EDGE_L != 0) {
+        x = start.x + mdx;
+        ww = start.w - mdx;
+    }
+    if (rd.edges & EDGE_R != 0) ww = start.w + mdx;
+    if (rd.edges & EDGE_B != 0) hh = start.h + mdy;
+    const MIN_W: i32 = 160;
+    const MIN_H: i32 = 96;
+    if (ww < MIN_W) {
+        if (rd.edges & EDGE_L != 0) x = start.x + start.w - MIN_W;
+        ww = MIN_W;
+    }
+    if (hh < MIN_H) hh = MIN_H;
+    if (hh > TB_Y - y) hh = TB_Y - y;
+    const nr = mkRect(x, y, ww, hh);
+    const changed = ghost_rect == null or blk: {
+        const g = ghost_rect.?;
+        break :blk g.rect.x != nr.x or g.rect.y != nr.y or g.rect.w != nr.w or g.rect.h != nr.h;
+    };
+    if (changed) {
+        if (ghost_rect) |g| addDamage(mkRect(g.rect.x - 4, g.rect.y - 4, g.rect.w + 8, g.rect.h + 8));
+        ghost_rect = .{ .idx = rd.idx, .rect = nr };
+        addDamage(mkRect(nr.x - 4, nr.y - 4, nr.w + 8, nr.h + 8));
+        repaint();
+    }
+}
+
+/// 松手落锤：内核窗口直接改几何；用户窗口改外框 + 表面重分配
+fn finishResize(rd: anytype) void {
+    const g = ghost_rect orelse {
+        resize_drag = null;
+        return;
+    };
+    const nr = g.rect;
+    ghost_rect = null;
+    resize_drag = null;
+    const wi = rd.idx;
+    const w = &windows[wi];
+    addDamage(mkRect(nr.x - 4, nr.y - 4, nr.w + 8, nr.h + 8));
+    addDamage(winRect(w));
+    w.maximized = false;
+    w.x = nr.x;
+    w.y = nr.y;
+    w.w = nr.w;
+    w.h = nr.h;
+    if (w.kind == .user) {
+        _ = winsys.resizeSlot(wi, w.w - 6, w.h - 31);
+    } else {
+        addDamage(SCREEN); // 终端自适应新行列
+    }
+    addDamage(winRect(w));
+}
+
 fn closeMenu() void {
     menu_open = false;
     btn_pressed = false;
     menu_hover = -1;
-    addDamage(menuRect());
+    const m = menuRect();
+    addDamage(mkRect(m.x, m.y, m.w + 2, m.h + 2)); // 含右/下 2px 投影
     addDamage(btnRect());
 }
 
 /// 左键按下：自顶向下做命中测试
 fn handlePress(x: i32, y: i32) void {
-    // 1) 菜单打开时：本次点击只作用于菜单（点外面 = 收起）
+    // 1) 系统菜单打开：点击只作用于它
+    if (sysmenu_open) {
+        const m = sysMenuRect();
+        if (inRect(x, y, m)) {
+            const idx = hitSysMenuItem();
+            if (idx >= 0 and sysMenuItemEnabled(sysmenu_items[@intCast(idx)])) {
+                sysMenuAction(@intCast(idx));
+            } else {
+                closeSysMenu();
+            }
+        } else {
+            closeSysMenu();
+        }
+        return;
+    }
+
+    // 2) 开始菜单打开：本次点击只作用于菜单（点外面 = 收起）
     if (menu_open) {
         const m = menuRect();
         if (inRect(x, y, m)) {
@@ -770,43 +1468,103 @@ fn handlePress(x: i32, y: i32) void {
         return;
     }
 
-    // 2) 窗口（沿 z 序自顶向下；点中即提层，再按部位分发）
+    // 3) 窗口（沿 z 序自顶向下；点中即提层，再按部位分发）
     var zi: usize = zorder.len;
     while (zi > 0) {
         zi -= 1;
         const wi = zorder[zi];
         const w = &windows[wi];
         if (!w.visible) continue;
+
+        // 边缘缩放带优先（比标题栏更靠外的命中）
+        const edges = edgeAt(w, x, y);
+        if (edges != EDGE_NONE) {
+            raiseWindow(wi);
+            resize_drag = .{ .idx = wi, .edges = edges, .mx = x, .my = y, .r = winRect(w) };
+            ghost_rect = .{ .idx = wi, .rect = winRect(w) };
+            return;
+        }
         if (inRect(x, y, closeBoxRect(w))) {
-            if (w.kind == .user) {
-                // 用户窗口：隐藏 + 通知应用退出（表面/槽位随进程回收）
-                addDamage(winRect(w));
-                w.visible = false;
-                addDamage(taskbarRect());
-                w.opened = false;
-                winsys.requestClose(wi);
-            } else {
-                closeWin(w);
-            }
+            closeWindowByUser(wi);
+            return;
+        }
+        if (w.resizable and inRect(x, y, maxBoxRect(w))) {
+            toggleMaximize(wi);
             return;
         }
         if (!inRect(x, y, winRect(w))) continue;
         raiseWindow(wi);
-        if (inRect(x, y, titleRect(w)) and !inRect(x, y, sysBoxRect(w))) {
-            drag = .{ .idx = wi, .offx = x - w.x, .offy = y - w.y };
-        } else if (!inRect(x, y, titleRect(w))) {
-            app_capture = wi; // 按住期间的移动归这个窗口
-            if (w.kind == .user) {
-                const cr = clientRect(w);
-                winsys.push(wi, .{ .kind = winsys.EV_PRESS, .x = @intCast(x - cr.x), .y = @intCast(y - cr.y), .code = 0, ._pad = 0, ._pad2 = 0 });
+
+        if (inRect(x, y, sysBoxRect(w))) {
+            // 系统菜单盒：弹出（再点一次 = 收起）
+            if (sysmenu_open and sysmenu_win == wi) {
+                closeSysMenu();
             } else {
-                apps.onPress(w, x, y); // 内核窗口客户区
+                closeSysMenu();
+                sysmenu_open = true;
+                sysmenu_win = wi;
+                sysmenu_hover = -1;
+                addDamage(sysMenuRect());
             }
+            return;
         }
+        if (inRect(x, y, titleRect(w))) {
+            if (!w.maximized) drag = .{ .idx = wi, .offx = x - w.x, .offy = y - w.y };
+            return;
+        }
+
+        // 客户区/任务栏按钮
+        if (w.kind == .user) {
+            const cr = clientRect(w);
+            const cx = x - cr.x;
+            const cy = y - cr.y;
+            // 双击识别（同窗口、±4px、350ms 内的第二次按下）
+            const is_dbl = last_click_win == wi and
+                pit.ticks - last_click_tick <= DBL_TICKS and
+                @abs(cx - last_click_x) <= DBL_SLOP and @abs(cy - last_click_y) <= DBL_SLOP;
+            last_click_win = wi;
+            last_click_tick = pit.ticks;
+            last_click_x = cx;
+            last_click_y = cy;
+            const kind: u8 = if (is_dbl) winsys.EV_DBL else winsys.EV_PRESS;
+            winsys.push(wi, .{ .kind = kind, .x = @intCast(cx), .y = @intCast(cy), .code = 0, ._pad = 0, ._pad2 = 0 });
+        } else {
+            apps.onPress(w, x, y); // 内核窗口客户区
+        }
+        app_capture = wi; // 按住期间的移动归这个窗口
         return;
     }
 
-    // 3) 任务栏：ZOS 按钮弹菜单，窗口按钮最小化/还原/提层
+    // 4) 桌面图标（单击选中 / 双击启动）
+    const ic = hitIcon(x, y);
+    if (ic >= 0) {
+        const i: usize = @intCast(ic);
+        const is_dbl = last_click_win == (0x8000_0000 | i) and
+            pit.ticks - last_click_tick <= DBL_TICKS and
+            @abs(x - last_click_x) <= DBL_SLOP and @abs(y - last_click_y) <= DBL_SLOP;
+        if (is_dbl) {
+            icon_sel = -1;
+            last_click_win = 0xFFFF;
+            addDamage(iconRect(i));
+            launchIcon(i);
+        } else {
+            const old = icon_sel;
+            icon_sel = ic;
+            last_click_win = 0x8000_0000 | i;
+            last_click_tick = pit.ticks;
+            last_click_x = x;
+            last_click_y = y;
+            if (old >= 0) addDamage(iconRect(@intCast(old)));
+            addDamage(iconRect(i));
+        }
+        return;
+    }
+    if (icon_sel >= 0) {
+        addDamage(iconRect(@intCast(icon_sel)));
+        icon_sel = -1;
+    }
+
+    // 5) 任务栏：ZOS 按钮弹菜单，窗口按钮最小化/还原/提层
     if (inRect(x, y, btnRect())) {
         menu_open = true;
         btn_pressed = true;
@@ -815,20 +1573,18 @@ fn handlePress(x: i32, y: i32) void {
         addDamage(menuRect());
         return;
     }
-    for (&windows, 0..) |*w, wi| {
-        if (!w.opened) continue;
-        if (!inRect(x, y, taskBtnRect(wi))) continue;
+    if (taskBtnHit(x, y)) |wi| {
+        const w = &windows[wi];
         if (!w.visible) {
             showWindow(wi); // 还原（并提层）
         } else if (topVisible() == wi) {
-            closeWin(w); // 活动窗口 → 最小化
+            minimizeWindow(wi); // 活动窗口 → 最小化
         } else {
             raiseWindow(wi); // 切到前台
         }
         addDamage(taskbarRect());
         return;
     }
-    // 4) 桌面：无操作
 }
 
 /// 右键按下：用户窗口发事件（扫雷插旗）；内核窗口只有扫雷用过（已迁出）
@@ -863,6 +1619,19 @@ fn hitMenuItem() i8 {
 
 pub fn onTick() void {
     if (!active) return;
+    if (saver_on) {
+        // 星场动画：只记星点周围的小脏区（整屏重刷 100Hz 太贵）
+        for (stars) |s| {
+            addDamage(mkRect(s.x - 2, s.y - 1, 8, 3));
+        }
+        repaint();
+        return;
+    }
+    // 屏保倒计时（0 = 禁用）
+    if (saver_timeout_s > 0 and pit.ticks - last_input_tick >= @as(u64, saver_timeout_s) * 100) {
+        saverStart();
+        return;
+    }
     if (updateClock()) addDamage(clockRect());
     apps.onTick(); // 应用计时器（终端光标闪烁/扫雷秒表）
     repaint();
@@ -879,16 +1648,45 @@ pub fn onConsoleChar(c: u8) void {
 }
 
 /// 键盘入口（keyboard.zig 的所有按键都走这里）。
-/// 键盘焦点 = 活动窗口：用户应用窗口收 EV_KEY 事件（应用自己解释，
-/// 含 0xF0..0xF3 方向键私有码）；否则照旧进 tty 行规程（串口 shell 的
-/// 回显/控制字符行为完全不变）。
+/// 键盘焦点 = 活动窗口：
+///   - 用户应用窗口：EV_KEY 事件（应用自己解释，0xF0..0xF8 私有码，
+///     Ctrl+字母 = 控制码 0x01..0x1A）；
+///   - Terminal（内核窗口）：PgUp/PgDn/Home/End 归回滚，其余照旧进
+///     tty 行规程（串口 shell 的回显/控制字符行为完全不变）；
+///   - 桌面/About：ASCII 照旧进 tty。
 pub fn onKey(c: u8) void {
-    if (active) {
-        const wi = topVisible();
-        const w = &windows[wi];
-        if (w.visible and w.kind == .user) {
-            winsys.push(wi, .{ .kind = winsys.EV_KEY, .x = 0, .y = 0, .code = c, ._pad = 0, ._pad2 = 0 });
-            return;
+    if (!active) {
+        if (c < 0xF0) tty.onInput(c);
+        return;
+    }
+    last_input_tick = pit.ticks;
+    if (saver_on) {
+        saverStop();
+        return;
+    }
+    if (sysmenu_open and c == 0x1B) { // Esc 收系统菜单
+        closeSysMenu();
+        return;
+    }
+    if (menu_open and c == 0x1B) { // Esc 收开始菜单
+        closeMenu();
+        addDamage(menuRect());
+        return;
+    }
+
+    const wi = topVisible();
+    const w = &windows[wi];
+    if (w.visible and w.kind == .user) {
+        pushUserEvent(wi, .{ .kind = winsys.EV_KEY, .x = 0, .y = 0, .code = c, ._pad = 0, ._pad2 = 0 });
+        return;
+    }
+    if (w.visible and w.kind == .terminal) {
+        switch (c) {
+            0xF6, 0xF7, 0xF4, 0xF5 => { // PgUp/PgDn/Home/End → 回滚
+                @import("apps/term.zig").onKey(c);
+                return;
+            },
+            else => {},
         }
     }
     if (c < 0xF0) tty.onInput(c);
@@ -995,6 +1793,7 @@ pub fn init() void {
         .shadow = px(0x80, 0x80, 0x80),
         .ltf = px(0xDF, 0xDF, 0xDF),
     };
+    wallpaper = pal.desktop;
 
     active = true;
     setKernelTitle(0, "About ZOS");
@@ -1011,7 +1810,86 @@ pub fn init() void {
     }
 
     _ = updateClock();
+    last_input_tick = pit.ticks;
     addDamage(SCREEN);
     repaint();
-    console.kprintf("gui: 640x480x32 compositor up (desktop/taskbar/menu/windows/apps)\n", .{});
+    console.kprintf("gui: 640x480x32 compositor up (desktop icons/taskbar/menu/windows/saver)\n", .{});
 }
+
+/// 文件系统就绪后调用（main.zig）：读回 Control Panel 存的设置 +
+/// 播放开机音（WAV 依赖 ramfs，必须晚于 tarfs.init）。
+pub fn lateInit() void {
+    loadSettings();
+    _ = @import("audio.zig").playSystem(0); // 0 = startup chime
+}
+
+// ---------------- 设置（/etc/zos.conf） ----------------
+//
+// Control Panel 写、gui 读的极简 key=value 文本：
+//   wallpaper=0,128,128     桌面底色 RGB
+//   saver=90                屏保超时秒（0 禁用）
+// 文件在 ramfs 里，重启丢失（教学内核没有掉电存储）。
+
+pub fn loadSettings() void {
+    const node = vfs.resolve("/etc/zos.conf", "/") orelse return;
+    const inf = vfs.info(node);
+    if (inf.is_dir or inf.size == 0) return;
+    var buf: [256]u8 = undefined;
+    const n = vfs.read(node, 0, buf[0..@min(inf.size, buf.len)]);
+    if (n <= 0) return;
+
+    var it = LineIter{ .s = buf[0..@intCast(n)] };
+    while (it.next()) |line| {
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = line[0..eq];
+        const val = line[eq + 1 ..];
+        if (std.mem.eql(u8, key, "wallpaper")) {
+            var parts: [3]u32 = .{ 0, 128, 128 };
+            var pi: usize = 0;
+            var cur: u32 = 0;
+            var any = false;
+            for (val) |ch| {
+                if (ch == ',') {
+                    if (pi < 3) parts[pi] = cur;
+                    pi += 1;
+                    cur = 0;
+                    any = false;
+                } else if (ch >= '0' and ch <= '9') {
+                    cur = cur * 10 + (ch - '0');
+                    any = true;
+                }
+            }
+            if (any and pi < 3) parts[pi] = cur;
+            wallpaper = px(@intCast(@min(parts[0], 255)), @intCast(@min(parts[1], 255)), @intCast(@min(parts[2], 255)));
+        } else if (std.mem.eql(u8, key, "saver")) {
+            var v: u32 = 0;
+            for (val) |ch| {
+                if (ch < '0' or ch > '9') break;
+                v = v * 10 + (ch - '0');
+            }
+            saver_timeout_s = @min(v, 3600);
+        } else if (std.mem.eql(u8, key, "volume")) {
+            var v: u32 = 0;
+            for (val) |ch| {
+                if (ch < '0' or ch > '9') break;
+                v = v * 10 + (ch - '0');
+            }
+            @import("audio.zig").setVolume(@min(v, 100));
+        }
+    }
+    addDamage(SCREEN);
+}
+
+const LineIter = struct {
+    s: []const u8,
+    pos: usize = 0,
+
+    fn next(self: *LineIter) ?[]const u8 {
+        if (self.pos >= self.s.len) return null;
+        const start = self.pos;
+        while (self.pos < self.s.len and self.s[self.pos] != '\n') self.pos += 1;
+        const l = self.s[start..self.pos];
+        self.pos += 1;
+        return l;
+    }
+};

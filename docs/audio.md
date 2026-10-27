@@ -118,11 +118,19 @@ python3 scripts/audiotest.py
 
 想亲耳听：`run.sh` 头部注释里给了 pa/wav 后端的配置示例。
 
-## 8. 已知边界与练习
+## 8. 0.2.0 新增与剩余边界
 
-- 单会话单音；无混音（两个进程同时 beep 会 EAGAIN）；
-  混音器 = 多路 Synth 求和 + 削波保护，好练习；
+- **WAV 播放**：playWav 解析 RIFF（只认线性 PCM），把 8/16bit、
+  单/立体声、任意采样率归一化到 48kHz S16 立体声（16.16 定点步进
+  最近邻重采样），再走与合成共用的 stream() 播放环；
+  shell `play <file.wav>` / SYS_zos_wav(506)。
+- **系统音效**：playNotes 的音符序列合成（{频率,毫秒} comptime 表），
+  playSystem(kind) 七种——GUI 开机音、FM 打开/删除、扫雷插旗/爆雷/
+  新纪录/通关等；SYS_zos_sound(507)。
+- **音量**：mixer 衰减寄存器（0=最大 63=最小）线性换算，
+  SYS_zos_volume(509)；Control Panel 即时调节并写入 /etc/zos.conf
+  （gui.lateInit 开机读回）。
+- 仍单会话：两个播放方竞争时后者 EAGAIN（系统音效忙时静默跳过）；
+  多路混音器 = 多源求和 + 削波保护，仍是好练习。
 - 无录音（PCM-in 流的 BDL 是现成的镜像工作）；
-- 无中断驱动：BCIS + IOC 标志可把补位从 100Hz 轮询改成 IRQ（AC97
-  的 PCI INTA 接到 8259 的一根空 IRQ 上）；
-- 音量固定最大；mixer 命令（读写 NAM 寄存器）是顺手的扩展。
+- 无中断驱动：BCIS + IOC 标志可把补位从 100Hz 轮询改成 IRQ。

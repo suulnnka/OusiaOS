@@ -6,11 +6,12 @@ ZOS 是一个为**操作系统课程教学**设计的迷你内核：从 GRUB 引
 
 > 📚 **深入文档见 [docs/](docs/README.md)**——按子系统展开的源码级讲解：
 > [总体架构](docs/architecture.md) · [内核子系统](docs/kernel.md) ·
+> [文件系统](docs/fs.md) ·
 > [系统调用参考](docs/syscalls.md) · [网络栈](docs/network.md) ·
 > [用户态与移植](docs/userland.md) · [miniGL 3D 图形](docs/gl.md) · [构建与调试](docs/build-and-debug.md)
 
 ```
-ZOS 0.1.0 -- a tiny teaching kernel in Zig
+ZOS 0.2.0 -- a tiny teaching kernel in Zig
 boot: 64-bit long mode OK
 ...
 tarfs: initrd [2b8000,8e4000) 6320KB, 17 entries
@@ -19,7 +20,7 @@ boot: init process spawned, entering scheduler
 ZOS shell (pid=1) -- type 'help' for commands
 
 / $ uname -a
-ZOS zos 0.1.0 ZOS #1 teaching kernel (zig) x86_64
+ZOS zos 0.2.0 ZOS #1 teaching kernel (zig) x86_64
 / $ ls /
 etc        <dir>
 dev        <dir>
@@ -34,13 +35,14 @@ forkdemo: parent pid=7, forking...
 
 ## 快速开始
 
-依赖：`zig 0.17.0`、`qemu-system-x86_64`、`grub-mkrescue`（打包 ISO）、`tar`。
+依赖：`zig 0.17.0`、`qemu-system-x86_64`、`grub-mkrescue`（打包 ISO）、
+`tar`、`e2fsprogs`（mke2fs/debugfs，制作 ext2 磁盘镜像）。
 
 ```bash
 # Ubuntu/Debian 安装工具（Zig 从官网下载 0.17.0）
-sudo apt install qemu-system-x86 grub-pc-bin xorriso mtools
+sudo apt install qemu-system-x86 grub-pc-bin xorriso mtools e2fsprogs
 
-zig build iso        # 编译内核+用户程序 → build/zos.iso
+zig build iso        # 编译内核+用户程序 → build/zos.iso（含 build/disk.img ext2 磁盘）
 zig build run        # 启动 QEMU（串口即控制台，Ctrl-A X 退出）
 ./scripts/run.sh     # 等价于 zig build run
 ```
@@ -48,13 +50,14 @@ zig build run        # 启动 QEMU（串口即控制台，Ctrl-A X 退出）
 带 VGA 窗口的交互模式（可用键盘输入）：
 
 ```bash
-qemu-system-x86_64 -cdrom build/zos.iso -m 256M        # VGA 显示 + 键盘
+qemu-system-x86_64 -cdrom build/zos.iso -drive file=build/disk.img,format=raw,if=ide -m 256M
 ```
 
 无头自动化测试（PTY 驱动串口 shell，逐条执行命令）：
 
 ```bash
 python3 scripts/test.py uname -a ls / cat /etc/motd ps forkdemo
+python3 scripts/fscheck.py   # ext2 落盘校验：QEMU 写入 → 宿主 e2fsck/debugfs 核对
 ```
 
 音频子系统（AC'97 + DDS 合成，QEMU 需 `-device AC97`）：
@@ -66,6 +69,25 @@ python3 scripts/audiotest.py   # wav 录音验证频率/时长（详见 docs/aud
 
 内核控制台同时输出到 VGA 文本屏（0xB8000）与 COM1 串口；
 `qemu -serial stdio` 时串口就是完整终端（输出 + 输入 + 回显）。
+
+### ext2 磁盘文件系统（/mnt，读 + 写）
+
+真磁盘上的 ext2：ATA PIO 驱动（`kernel/ata.zig`）+ 完整 ext2 实现
+（`kernel/ext2.zig`：超级块/组描述符/位图分配/一至三重间接块/目录项），
+VFS 挂载到 `/mnt`（`kernel/vfs.zig` 挂载表）。shell 里：
+
+```bash
+ls /mnt                       # 列磁盘（mkdisk.sh 预置 hello.txt/README/notes/）
+echo hi > /mnt/hi.txt         # 重定向写（O_CREAT+O_TRUNC 落盘）
+cat /mnt/hi.txt
+mkdir /mnt/d && rm -d /mnt/d  # 目录建删
+chmod 600 /mnt/hi.txt         # 权限位真正写进 inode
+df                            # 超级块空闲计数
+```
+
+写进 /mnt 的文件**跨重启保留**（对比 tarfs：RAM 里，重启即失），
+宿主机可以用 `debugfs -R "ls -l /" build/disk.img` 直接查看、
+`e2fsck -fn` 体检。详见 [docs/fs.md](docs/fs.md)。
 
 ### 图形界面（Win3.1 风格桌面 + 窗口 + 任务栏）
 
@@ -138,8 +160,10 @@ python3 scripts/glishot.py # 无头视觉回归：GL 窗口两帧差异 + 场景
 | `kernel/tty.zig` | 行规程 | 环形缓冲、回显、退格、行缓冲 |
 | `kernel/pmm.zig` | 物理内存 | 位图页帧分配器、内存映射初始化 |
 | `kernel/vmm.zig` | 虚拟内存 | 四级页表、直接映射区、mapPage、fork 克隆/销毁 |
-| `kernel/tarfs.zig` | 文件系统 | ustar 内存盘解析、目录列举 |
-| `kernel/vfs.zig` | VFS | 路径规范化（./..解析）、/dev/console 字符设备 |
+| `kernel/tarfs.zig` | 文件系统 | ustar 内存盘解析、目录列举（运行期可写） |
+| `kernel/ata.zig` | **块设备** | ATA PIO 驱动：IDENTIFY、LBA28 扇区读写、轮询握手 |
+| `kernel/ext2.zig` | **ext2（读+写）** | 超级块/组描述符、位图分配、间接块映射、目录项算法 |
+| `kernel/vfs.zig` | VFS | 路径规范化（./..解析）、/dev/console 字符设备、挂载表（/mnt→ext2） |
 | `kernel/elf.zig` | 加载器 | ELF64 PT_LOAD 段映射、bss 清零 |
 | `kernel/proc.zig` | 进程 | PCB、swtch 上下文切换、fork/exec/exit/wait4、轮转调度器 |
 | `kernel/pci.zig` | **PCI 枚举** | 配置空间访问、BAR 解码、MMIO 映射、总线主控使能 |
@@ -156,8 +180,8 @@ python3 scripts/glishot.py # 无头视觉回归：GL 窗口两帧差异 + 场景
 | `userland/lib/clib.c` | **libc（C 部分）** | C va_list 实现的 printf 全家族 + getopt |
 | `userland/lib/crt0.zig` | 启动代码 | _start → main(argc,argv,environ) → exit(atexit) |
 | `userland/include/` | **标准头文件** | stdio.h/string.h/... 移植的 C 代码零修改 include |
-| `userland/sh.zig` | shell | read→fork→exec→wait 循环、内建命令 |
-| `userland/*.zig` | Zig 命令 | ls cat echo ps uname sleep hello forkdemo |
+| `userland/sh.zig` | shell | read→fork→exec→wait 循环、内建命令、`>`/`>>` 重定向 |
+| `userland/*.zig` | Zig 命令 | ls cat echo ps uname sleep hello forkdemo mkdir rm df |
 | `userland/wc.c` `cdemo.c` | **C 程序** | 真 Unix wc 移植 + libc 全家桶演示 |
 | `userland/beep.zig` `music.zig` | **音频命令** | AC'97 蜂鸣 / 欢乐颂旋律（zos_beep 505） |
 | `userland/lib/gl.zig` | **miniGL 光栅化器** | OpenGL 1.x 子集：矩阵栈/深度/光照/透视校正纹理；宿主机可单测 |

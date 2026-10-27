@@ -1,0 +1,16 @@
+ext2 on-disk layout (1KB blocks, 2 groups):
+
+  block 0        boot area (unused)
+  block 1        superblock  (magic 0xEF53 at byte 1024+56)
+  block 2        group descriptors (32 bytes per group)
+  block 3..      block bitmap / inode bitmap / inode table, then data
+
+a file's blocks live in inode.i_block[15]:
+  [0..11]  direct          12 KB
+  [12]     indirect        12 KB + 256 KB
+  [13]     double indirect up to ~64 MB
+  [14]     triple indirect up to ~16 GB
+
+a directory is just a file of records:
+  { inode u32, rec_len u16, name_len u8, file_type u8, name[] }
+deleting = folding the record's space into the previous one.

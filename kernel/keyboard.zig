@@ -70,17 +70,22 @@ pub fn onInterrupt() void {
         else => {},
     }
 
-    // 方向键 → GUI 私有键码（0xF0..0xF3）：没有 ASCII 映射，且绝不能
-    // 以控制字符身份进 tty（0x11/0x13 是 XON/XOFF，串口终端会炸流控）
-    const arrow: u8 = switch (scancode) {
+    // 方向键/编辑键 → GUI 私有键码（0xF0..0xF8）：没有 ASCII 映射，且
+    // 绝不能以控制字符身份进 tty（0x11/0x13 是 XON/XOFF，串口终端会炸流控）
+    const special: u8 = switch (scancode) {
         0x48 => 0xF0, // ↑
         0x50 => 0xF1, // ↓
         0x4B => 0xF2, // ←
         0x4D => 0xF3, // →
+        0x47 => 0xF4, // Home
+        0x4F => 0xF5, // End
+        0x49 => 0xF6, // PgUp
+        0x51 => 0xF7, // PgDn
+        0x53 => 0xF8, // Del
         else => 0,
     };
-    if (arrow != 0) {
-        gui.onKey(arrow); // gui.onKey：焦点在 GUI 应用才收，否则丢弃
+    if (special != 0) {
+        gui.onKey(special); // gui.onKey：焦点在 GUI 应用才收，否则丢弃
         return;
     }
 

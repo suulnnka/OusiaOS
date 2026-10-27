@@ -22,8 +22,8 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | nr | 调用 | 原型要点 | 语义摘要 |
 |---|---|---|---|
 | 0 | read | (fd, buf, count) | console 行缓冲读 / tarfs 文件读；上限 64KB 每次 |
-| 1 | write | (fd, buf, count) | 仅 console 可写 |
-| 2 | open | (path, flags) | 只读打开；O_DIRECTORY；写打开→EROFS |
+| 1 | write | (fd, buf, count) | console / tarfs(RAM) / ext2(磁盘) 可写；从 fd 位置续写 |
+| 2 | open | (path, flags) | O_RDONLY/O_WRONLY/O_RDWR + O_CREAT/O_EXCL/O_TRUNC；/mnt 下落盘 ext2 |
 | 3 | close | (fd) | 释放 fd 槽位 |
 | 5 | fstat | (fd, buf) | 填 x86_64 struct stat 关键字段 |
 | 9 | mmap | (addr 忽略, len, prot 忽略) | 匿名 RW 用户页，游标分配 |
@@ -33,6 +33,7 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | 16 | ioctl | (fd, req) | console + TCGETS(0x5401) → 0；isatty 的基础 |
 | 19 | lseek | (fd, off, whence) | SEEK_SET/CUR/END；console→ESPIPE |
 | 32 | dup | (fd) | 复制到最低空闲槽 |
+| 33 | dup2 | (fd, newfd) | 复制到指定槽位（shell 重定向 `>` 的基础） |
 | 35 | nanosleep | (req) | 按 timespec 睡眠（调度器阻塞） |
 | 39 | getpid | — | 当前 pid |
 | 57 | fork | — | 深拷贝克隆；子进程返回 0 |
@@ -42,11 +43,14 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | 63 | uname | (buf) | "ZOS 0.1.0 x86_64" |
 | 79 | getcwd | (buf, size) | 每进程 cwd |
 | 80 | chdir | (path) | 规范化后更新 cwd |
-| 90 | chmod | (path, mode) | 权限位内存态生效（owner/root） |
+| 90 | chmod | (path, mode) | 权限位生效（owner/root）；tarfs 改 RAM 副本，ext2 落盘 |
 | 92 | chown | (path, uid, gid) | root 专属；gid=-1 不改 |
 | 102/104 | getuid/getgid | — | 进程凭证 |
 | 105/106 | setuid/setgid | (uid/gid) | root 任意切；普通人只能切自己 |
 | 201 | time | — | 自开机秒数 |
+| 83 | mkdir | (path, mode) | 建目录（父目录需 w+x；ext2 落盘） |
+| 84 | rmdir | (path) | 删空目录（非空 → ENOTEMPTY） |
+| 87 | unlink | (path) | 删文件（目录 → EISDIR） |
 | 217 | getdents64 | (fd, buf, count) | 一次性返回目录全部孩子 |
 | 510 | win_create | (w, h, title*) | → 表面用户虚拟地址（用户态 GUI） |
 | 511 | win_present | — | 客户区记脏区，IRQ0 合成上屏 |
@@ -58,6 +62,7 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | 502 | zos_http_get | (host, port, path, out*, out_len) | 阻塞式 DNS+TCP+HTTP GET |
 | 503 | zos_net_info | (buf, len) | 网络配置串（ifconfig 用） |
 | 505 | zos_beep | (freq, ms) | AC'97 正弦单音，阻塞播完（audio 用） |
+| 508 | zos_fsinfo | (buf, len) | ext2 概要串（df 用）；未挂载 → ENOSYS |
 
 ## 2. 分组说明
 
@@ -202,4 +207,22 @@ int 0x80             ; rax = pid
 - execve 失败时已建的新地址空间会泄漏（练习：补清理）；
 - getdents64 假设调用方缓冲足够大（ls 用 4KB）；
 - read/write 单次上限 64KB；
-- 无 environ；无 fchmod/chmod/unlink/link（文件系统只读）。
+- 无 environ；fchmod/fchown 无（chmod/chown/unlink/mkdir/rmdir 已有）。
+
+## 7. ZOS 扩展调用（500 段 + 窗口服务 510 段）
+
+| 号 | 语义 |
+|---|---|
+| 505 | zos_beep(freq, ms)：阻塞正弦单音 |
+| 506 | zos_wav(path)：读文件播 WAV（RIFF/PCM，重采样归一到 48k S16） |
+| 507 | zos_sound(kind)：系统音效 0 startup 1 click 2 open 3 close 4 ding 5 error 6 tada |
+| 509 | zos_volume(pct)：AC'97 主音量 0..100 |
+| 510-515 | win_create/present/poll/wait/color/fmt（窗口服务） |
+| 516/517 | win_clip_set/get：系统剪贴板（1KB 文本） |
+| 518 | win_resize(cw,ch)：重分配表面（最大化/缩放后应用重画） |
+| 519 | win_title(ptr)：改窗口标题 |
+
+事件（win_wait/win_poll 的 WinEvent.kind）：1 PRESS 2 RPRESS
+3 RELEASE 4 MOVE 5 KEY 6 CLOSE 7 RESIZE 8 DBL 9 ACTIVATE
+10 DEACTIVATE；键盘码 = ASCII/Ctrl+字母(0x01..0x1A) 或私有码
+0xF0..0xF8（↑↓←→ Home End PgUp PgDn Del）。

@@ -17,9 +17,10 @@ chmod 755 build/rootfs/bin/* 2>/dev/null || true
 chmod 644 build/rootfs/etc/issue build/rootfs/etc/motd \
           build/rootfs/etc/passwd build/rootfs/etc/group build/rootfs/hello.txt 2>/dev/null || true
 chmod 600 build/rootfs/etc/shadow 2>/dev/null || true
-chmod 755 build/rootfs/etc build/rootfs/bin build/rootfs/dev 2>/dev/null || true
+chmod 644 build/rootfs/etc/zos.conf build/rootfs/etc/sounds/*.wav 2>/dev/null || true
+chmod 755 build/rootfs/etc build/rootfs/bin build/rootfs/dev build/rootfs/tmp build/rootfs/etc/sounds 2>/dev/null || true
 
 # ustar 格式；-C 保证条目无 "./" 前缀
 # --owner/--group=0：文件全部记为 root:root（宿主 uid 会带进 tar！）
-tar --format=ustar --owner=0 --group=0 --numeric-owner -cf build/initrd.tar -C build/rootfs etc dev bin hello.txt
+tar --format=ustar --owner=0 --group=0 --numeric-owner -cf build/initrd.tar -C build/rootfs etc dev bin tmp hello.txt
 echo "initrd: build/initrd.tar ($(du -h build/initrd.tar | cut -f1), $(tar -tf build/initrd.tar | wc -l) entries)"

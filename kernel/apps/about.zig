@@ -9,13 +9,15 @@ const mkRect = gui.mkRect;
 const inRect = gui.inRect;
 
 pub fn paint(w: *const gui.Win) void {
+    // 多档字号演示：2x 大标题 + 1x 正文
+    gui.textScaled(w.x + 18, w.y + 30, "ZOS 0.2.0", gui.pal.navy, 2);
     const lines = [_][]const u8{
-        "ZOS 0.1.0 -- teaching kernel in Zig",
-        "Compositor: damage-rect repaint",
-        "Input: PS/2 mouse (IRQ12)",
+        "teaching kernel in Zig -- GUI/writable-FS/audio",
+        "Compositor: damage-rect repaint, desktop icons",
+        "Input: PS/2 mouse (IRQ12) + keyboard focus",
         "VBE 640x480x32 via GRUB gfxpayload",
     };
-    var ty = w.y + 36;
+    var ty = w.y + 66;
     for (lines) |l| {
         gui.text(w.x + 18, ty, l, gui.pal.black);
         ty += 18;

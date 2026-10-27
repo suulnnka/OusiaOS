@@ -1,10 +1,18 @@
 //! fm —— File Manager（用户态 GUI 应用）
 //!
-//! 内核 GUI 时代的 apps/filer.zig 移植：同一套界面（路径栏/列表/
-//! 滚动条/预览/状态栏），但现在它是普通用户进程——目录枚举走
-//! getdents64、文件内容走 open+read、权限走内核 vfs 检查（本进程由
-//! 内核以 root 直启，/root 旁路；非 root 版本会被 EACCES 拦住）。
-//! 单击目录进入、.. 返回、单击文件右栏预览；状态栏显示权限串与属主。
+//! 内核 GUI 时代的 apps/filer.zig 移植 + 可写文件系统的完整 UI：
+//!   - File 菜单：New File / New Folder / Delete / Exit；Edit：Copy；
+//!     View：Refresh——菜单栏是 lib/win.MenuBar 控件
+//!   - New File/Folder 用【Edit 控件】行内对话框收名字（"Edit 控件"
+//!     特性的首个真实用户），open(O_CREAT) / zos.mkdir 落盘
+//!   - 双击（EV_DBL）：目录进入；文本文件 fork+execve 交给 Notepad
+//!     （窗口多实例练习②的另一半：同一应用可以同时开多个）
+//!   - Delete：unlink 文件 / rmdir 空目录（内核查权限，失败在状态栏报错）
+//!   - Copy + Paste：Ctrl+C 把选中路径放系统剪贴板，Paste 读回并把
+//!     文件内容复制到 "Copy of <名字>"——纯用户态 read+write 组合
+//!   - 焦点回到窗口（EV_ACTIVATE）自动重列目录（练习④的"联动刷新"：
+//!     Notepad 保存后切回来立即看到新大小）
+//!   - 标题栏实时显示当前路径（win_title 系统调用）
 
 const zos = @import("lib/zos.zig");
 const win = @import("lib/win.zig");
@@ -21,6 +29,7 @@ const LIST_W = 264;
 const SB_W = 16;
 const ROW_H = 16;
 const PATH_H = 20;
+const MENUBAR_H = 18;
 
 const Entry = struct {
     name: [28]u8 = undefined,
@@ -43,6 +52,25 @@ var prev_len: usize = 0;
 var prev_total: usize = 0;
 var dirty = true;
 
+// ---- 行内对话框状态（New File / New Folder 共用）----
+const Dialog = enum { none, new_file, new_folder };
+var dialog: Dialog = .none;
+var dlg_edit: win.Edit = .{};
+var status_msg: [64]u8 = undefined;
+var status_len: usize = 0;
+
+// ---- 菜单 ----
+const file_items = [_][]const u8{ "New File...", "New Folder...", "Delete", "", "Exit" };
+const edit_items = [_][]const u8{"Copy  Ctrl+C"};
+const view_items = [_][]const u8{"Refresh  F5"};
+const menu_defs = [_]win.MenuDef{
+    .{ .label = "File", .items = &file_items },
+    .{ .label = "Edit", .items = &edit_items },
+    .{ .label = "View", .items = &view_items },
+};
+var menubar = win.MenuBar{ .defs = &menu_defs };
+var menu_item_out: win.MenuHit = .{ .menu = 0, .idx = 0 };
+
 fn label(e: *const Entry) []const u8 {
     return e.name[0..e.nlen];
 }
@@ -55,11 +83,18 @@ fn visualRows() usize {
     return count + @intFromBool(hasParent());
 }
 
+fn setStatus(s: []const u8) void {
+    status_len = @min(s.len, status_msg.len);
+    @memcpy(status_msg[0..status_len], s[0..status_len]);
+    dirty = true;
+}
+
 fn go(p: []const u8) void {
     if (p.len == 0 or p.len > path.len) return;
     @memcpy(path[0..p.len], p);
     path_len = p.len;
     list();
+    updateTitle();
 }
 
 fn up() void {
@@ -68,6 +103,7 @@ fn up() void {
     while (path_len > 1 and path[path_len - 1] != '/') path_len -= 1;
     if (path_len > 1) path_len -= 1;
     list();
+    updateTitle();
 }
 
 fn enter(name: []const u8) void {
@@ -81,6 +117,14 @@ fn enter(name: []const u8) void {
     @memcpy(path[path_len .. path_len + name.len], name);
     path_len += name.len;
     list();
+    updateTitle();
+}
+
+fn updateTitle() void {
+    var t: [60]u8 = undefined;
+    var n: usize = put(&t, 0, "File Manager: ");
+    n += put(&t, n, path[0..path_len]);
+    win.setTitle(t[0..n]);
 }
 
 fn less(a: *const Entry, b: *const Entry) bool {
@@ -128,10 +172,10 @@ fn list() void {
         // 插入排序：目录在前，同类字典序
         var i: usize = 1;
         while (i < count) : (i += 1) {
-            const key = entries[i];
+            const k = entries[i];
             var j = i;
-            while (j > 0 and less(&key, &entries[j - 1])) : (j -= 1) entries[j] = entries[j - 1];
-            entries[j] = key;
+            while (j > 0 and less(&k, &entries[j - 1])) : (j -= 1) entries[j] = entries[j - 1];
+            entries[j] = k;
         }
     }
     dirty = true;
@@ -158,6 +202,12 @@ fn joinPath(buf: []u8, base: []const u8, name: []const u8) []const u8 {
     return buf[0..n];
 }
 
+fn fullPath(buf: []u8, name: []const u8) []const u8 {
+    var zpath: [256]u8 = undefined;
+    _ = withNul(&zpath, path[0..path_len]);
+    return joinPath(buf, zpath[0..path_len], name);
+}
+
 fn selectEntry(i: usize) void {
     sel = i;
     const e = &entries[i];
@@ -178,21 +228,249 @@ fn selectEntry(i: usize) void {
     dirty = true;
 }
 
-fn press(x: i32, y: i32) void {
+/// 双击/回车打开：目录进入；文件 → 交给 Notepad（fork+execve，
+/// 子进程重新变成自己的窗口——File Manager 继续活着）
+fn openEntry(i: usize) void {
+    const e = &entries[i];
+    if (e.is_dir) {
+        enter(label(e));
+        return;
+    }
+    var full: [300]u8 = undefined;
+    var zfull: [320]u8 = undefined;
+    const fl = fullPath(&full, label(e));
+    const zf = withNul(&zfull, fl);
+    const pid = zos.fork();
+    if (pid == 0) {
+        // 子进程：变成 Notepad（失败就退出，不留孤儿命令进程）
+        const argv = [_][]const u8{ "/bin/note", zf[0..fl.len] };
+        const r = zos.execve("/bin/note", &argv);
+        _ = r;
+        zos.exit(1);
+    }
+    setStatus("opened in Notepad");
+    win.sound(2); // open
+}
+
+// ---- 文件操作（可写文件系统的 UI 面） ----
+
+fn startDialog(d: Dialog) void {
+    dialog = d;
+    dlg_edit = .{};
+    dlg_edit.setText(if (d == .new_file) "untitled.txt" else "folder");
+    // 预全选默认名：直接打字即替换（双击对话框也能改）
+    dlg_edit.sel_a = 0;
+    dlg_edit.sel_b = dlg_edit.len;
+    dirty = true;
+}
+
+fn dialogOk() void {
+    const name = dlg_edit.content();
+    defer dialog = .none;
+    if (name.len == 0) return;
+    var full: [300]u8 = undefined;
+    const fl = fullPath(&full, name);
+    var zfl: [320]u8 = undefined;
+    const zf = withNul(&zfl, fl);
+    var msg: [96]u8 = undefined;
+    switch (dialog) {
+        .new_file => {
+            // O_CREAT|O_EXCL：已存在报 EEXIST，不覆盖
+            const fd = zos.open(zf[0..fl.len], win.O_WRONLY | win.O_CREAT | win.O_EXCL);
+            if (fd >= 0) {
+                _ = zos.close(@intCast(fd));
+                setStatus("file created");
+                win.sound(2);
+            } else {
+                setStatus(fmtErr("create failed", fd, &msg));
+                win.sound(5);
+            }
+        },
+        .new_folder => {
+            const r = zos.mkdir(zf[0..fl.len], 0o755);
+            if (r == 0) {
+                setStatus("folder created");
+                win.sound(2);
+            } else {
+                setStatus(fmtErr("mkdir failed", r, &msg));
+                win.sound(5);
+            }
+        },
+        .none => {},
+    }
+    list();
+}
+
+fn deleteSel() void {
+    const i = sel orelse return;
+    const e = &entries[i];
+    var full: [300]u8 = undefined;
+    var zfl: [320]u8 = undefined;
+    const fl = fullPath(&full, label(e));
+    const zf = withNul(&zfl, fl);
+    var msg: [96]u8 = undefined;
+    const r = if (e.is_dir) zos.rmdir(zf[0..fl.len]) else zos.unlink(zf[0..fl.len]);
+    if (r == 0) {
+        setStatus(if (e.is_dir) "folder removed" else "file deleted");
+        win.sound(3); // close
+    } else {
+        // 常见失败：目录非空 / 权限——内核的 errno 直接透出
+        setStatus(fmtErr("delete failed", r, &msg));
+        win.sound(5);
+    }
+    sel = null;
+    list();
+}
+
+fn copySelToClip() void {
+    const i = sel orelse return;
+    var full: [300]u8 = undefined;
+    const fl = fullPath(&full, label(&entries[i]));
+    _ = win.clipSet(fl);
+    setStatus("path copied");
+}
+
+/// 剪贴板里的路径 → 复制文件内容到当前目录 "Copy of <name>"
+fn pasteFromClip() void {
+    var cb: [1024]u8 = undefined;
+    const n = win.clipGet(&cb);
+    if (n <= 0) {
+        setStatus("clipboard empty");
+        return;
+    }
+    const src = cb[0..@intCast(n)];
+    // 找文件名（最后一个 '/' 后）
+    var base: usize = 0;
+    for (src, 0..) |c, k| {
+        if (c == '/') base = k + 1;
+    }
+    const name = src[base..];
+    if (name.len == 0) {
+        setStatus("clipboard has no file path");
+        return;
+    }
+    var dst: [300]u8 = undefined;
+    var dn: usize = 0;
+    dn += put(&dst, dn, "Copy of ");
+    dn += put(&dst, dn, name);
+    var zsrc: [320]u8 = undefined;
+    var zdst: [320]u8 = undefined;
+    const zs = withNul(&zsrc, src);
+    const zd = withNul(&zdst, dst[0..dn]);
+
+    const sfd = zos.open(zs[0..src.len], win.O_RDONLY);
+    if (sfd < 0) {
+        setStatus("cannot open clipboard file");
+        win.sound(5);
+        return;
+    }
+    defer _ = zos.close(@intCast(sfd));
+    const dfd = zos.open(zd[0..dn], win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
+    if (dfd < 0) {
+        setStatus("create Copy of ... failed");
+        win.sound(5);
+        return;
+    }
+    defer _ = zos.close(@intCast(dfd));
+    var buf: [2048]u8 = undefined;
+    var total: usize = 0;
+    while (true) {
+        const r = zos.read(@intCast(sfd), &buf);
+        if (r <= 0) break;
+        var off: usize = 0;
+        while (off < @as(usize, @intCast(r))) {
+            const w = zos.write(@intCast(dfd), buf[off..@intCast(r)]);
+            if (w <= 0) break;
+            off += @intCast(w);
+            total += @intCast(w);
+        }
+    }
+    var msg: [64]u8 = undefined;
+    var mn: usize = 0;
+    mn += put(&msg, 0, "copied ");
+    mn += putNum(&msg, mn, total);
+    mn += put(&msg, mn, " bytes");
+    setStatus(msg[0..mn]);
+    win.sound(4);
+    list();
+}
+
+fn fmtErr(prefix: []const u8, code: isize, buf: []u8) []const u8 {
+    var n: usize = put(buf, 0, prefix);
+    n += put(buf, n, " (err ");
+    n += putNum(buf, n, @intCast(-code));
+    n += put(buf, n, ")");
+    return buf[0..n];
+}
+
+fn put(buf: []u8, pos: usize, s: []const u8) usize {
+    const n = @min(s.len, buf.len - pos);
+    @memcpy(buf[pos .. pos + n], s[0..n]);
+    return n;
+}
+
+fn putNum(buf: []u8, pos: usize, v: u64) usize {
+    var tmp: [20]u8 = undefined;
+    var n: usize = 0;
+    var x = v;
+    if (x == 0) {
+        if (pos < buf.len) buf[pos] = '0';
+        return 1;
+    }
+    while (x > 0) {
+        tmp[n] = '0' + @as(u8, @intCast(x % 10));
+        n += 1;
+        x /= 10;
+    }
+    var i: usize = 0;
+    while (i < n and pos + i < buf.len) : (i += 1) buf[pos + i] = tmp[n - 1 - i];
+    return i;
+}
+
+// ---- 鼠标/键盘 ----
+
+const DIALOG_Y = 24 + ROWS * ROW_H + 6;
+
+fn press(x: i32, y: i32, dbl: bool) void {
+    // 菜单栏
+    if (menubar.press(x, y, &menu_item_out)) {
+        handleMenu();
+        return;
+    }
+    // 行内对话框：Edit + OK/Cancel
+    if (dialog != .none) {
+        if (inBox(x, y, 8, DIALOG_Y, LIST_W - 120, 20)) {
+            _ = dlg_edit.content();
+            dlg_edit.click(x - 8 - 3, dbl);
+            dirty = true;
+            return;
+        }
+        if (inBox(x, y, LIST_W - 108, DIALOG_Y, 48, 20)) {
+            dialogOk();
+            return;
+        }
+        if (inBox(x, y, LIST_W - 56, DIALOG_Y, 48, 20)) {
+            dialog = .none;
+            dirty = true;
+            return;
+        }
+        return;
+    }
+
     // 滚动条
     const total = visualRows();
     if (total > ROWS) {
-        if (inBox(x, y, LIST_W - SB_W - 1, 24, SB_W, SB_W)) { // ▲
+        if (inBox(x, y, LIST_W - SB_W - 1, MENUBAR_H + 24, SB_W, SB_W)) { // ▲
             if (top > 0) top -= 1;
             dirty = true;
             return;
         }
-        if (inBox(x, y, LIST_W - SB_W - 1, 24 + ROWS * ROW_H - SB_W - 1, SB_W, SB_W)) { // ▼
+        if (inBox(x, y, LIST_W - SB_W - 1, MENUBAR_H + 24 + ROWS * ROW_H - SB_W - 1, SB_W, SB_W)) { // ▼
             if (top < total - ROWS) top += 1;
             dirty = true;
             return;
         }
-        const track_y = 24 + SB_W;
+        const track_y = MENUBAR_H + 24 + SB_W;
         const track_h = ROWS * ROW_H + 2 - 2 - 2 * SB_W;
         if (inBox(x, y, LIST_W - SB_W - 1, track_y, SB_W, track_h)) {
             const page: i32 = if (y < thumbY()) -ROWS else ROWS;
@@ -203,8 +481,8 @@ fn press(x: i32, y: i32) void {
         }
     }
     // 列表行
-    if (!inBox(x, y, 0, 24, LIST_W, ROWS * ROW_H + 2)) return;
-    const vy = @divTrunc(y - 24 - 1, ROW_H);
+    if (!inBox(x, y, 0, MENUBAR_H + 24, LIST_W, ROWS * ROW_H + 2)) return;
+    const vy = @divTrunc(y - MENUBAR_H - 24 - 1, ROW_H);
     if (vy < 0 or vy >= ROWS) return;
     const vr = top + @as(usize, @intCast(vy));
     if (hasParent()) {
@@ -212,10 +490,29 @@ fn press(x: i32, y: i32) void {
             up();
             return;
         }
-        if (vr - 1 < count) clickRow(vr - 1);
+        if (vr - 1 < count) {
+            if (dbl) openEntry(vr - 1) else clickRow(vr - 1);
+        }
     } else if (vr < count) {
-        clickRow(vr);
+        if (dbl) openEntry(vr) else clickRow(vr);
     }
+}
+
+fn handleMenu() void {
+    switch (menu_item_out.menu) {
+        0 => switch (menu_item_out.idx) {
+            0 => startDialog(.new_file),
+            1 => startDialog(.new_folder),
+            2 => deleteSel(),
+            3 => {},
+            4 => zos.exit(0),
+            else => {},
+        },
+        1 => copySelToClip(), // Edit: Copy
+        2 => list(), // View: Refresh
+        else => {},
+    }
+    dirty = true;
 }
 
 fn clickRow(i: usize) void {
@@ -225,6 +522,30 @@ fn clickRow(i: usize) void {
     } else {
         selectEntry(i);
     }
+}
+
+fn key(c: u8) void {
+    if (dialog != .none) {
+        switch (c) {
+            '\n', 0x0D => dialogOk(),
+            0x1B => dialog = .none,
+            else => {
+                if (dlg_edit.key(c)) dirty = true;
+            },
+        }
+        dirty = true;
+        return;
+    }
+    switch (c) {
+        win.CTRL_C => copySelToClip(),
+        win.CTRL_V => pasteFromClip(),
+        '\n', 0x0D => {
+            if (sel) |i| openEntry(i);
+        },
+        0x1B => {},
+        else => {},
+    }
+    dirty = true;
 }
 
 fn inBox(x: i32, y: i32, bx: i32, by: i32, bw: i32, bh: i32) bool {
@@ -237,21 +558,25 @@ fn thumbY() i32 {
     const track_h = ROWS * ROW_H - 2 * SB_W;
     const th = @max(@divTrunc(track_h * ROWS, @as(i32, @intCast(total))), 14);
     const movable = track_h - th;
-    return 24 + SB_W + @divTrunc(movable * @as(i32, @intCast(top)), @as(i32, @intCast(total - ROWS)));
+    return MENUBAR_H + 24 + SB_W + @divTrunc(movable * @as(i32, @intCast(top)), @as(i32, @intCast(total - ROWS)));
 }
 
 // ---------------- 绘制 ----------------
 
 fn draw() void {
-    win.fillRect(0, 0, CW, CH, win.C_CHROME);
+    const CWV = win.sw; // 窗口可能被最大化：按实际表面画
+    const CHV = win.sh;
+    win.fillRect(0, 0, CWV, CHV, win.C_CHROME);
+    menubar.draw(CWV);
+    const MB = MENUBAR_H;
 
     // 路径栏（凹白）
-    win.fillRect(2, 2, CW - 4, PATH_H, win.C_WHITE);
-    win.bevel(2, 2, CW - 4, PATH_H, false);
-    win.text(6, 3, path[0..path_len], win.C_BLACK);
+    win.fillRect(2, MB + 2, CWV - 4, PATH_H, win.C_WHITE);
+    win.bevel(2, MB + 2, CWV - 4, PATH_H, false);
+    win.text(6, MB + 3, path[0..path_len], win.C_BLACK);
 
     // 列表区
-    const ly = 24;
+    const ly = MB + 24;
     const lh = ROWS * ROW_H + 2;
     win.fillRect(2, ly, LIST_W, lh, win.C_WHITE);
     win.bevel(2, ly, LIST_W, lh, false);
@@ -304,7 +629,7 @@ fn draw() void {
 
     // 预览栏
     const px0 = LIST_W + 8;
-    const pw = CW - px0 - 4;
+    const pw = CWV - px0 - 4;
     win.fillRect(px0, ly, pw, lh, win.C_WHITE);
     win.bevel(px0, ly, pw, lh, false);
     const pv_cols: usize = @intCast(@divTrunc(pw - 6, 8));
@@ -327,51 +652,46 @@ fn draw() void {
         win.text(px0 + 3, ly + 2, "no file selected", win.C_SHADOW);
     }
 
-    // 状态栏：条目数 + 选中项的权限串/属主/大小
-    win.fillRect(2, CH - 18, CW - 4, 16, win.C_CHROME);
-    win.bevel(2, CH - 18, CW - 4, 16, false);
+    // 行内对话框（New File/Folder）
+    if (dialog != .none) {
+        win.fillRect(6, DIALOG_Y - 2, CWV - 12, 26, win.C_CHROME);
+        win.bevel2(6, DIALOG_Y - 2, CWV - 12, 26, true);
+        win.text(10, DIALOG_Y + 2, if (dialog == .new_file) "Name:" else "Dir :", win.C_BLACK);
+        dlg_edit.focused = true;
+        dlg_edit.draw(52, DIALOG_Y, LIST_W - 130, 20);
+        // OK / Cancel
+        win.fillRect(LIST_W - 108, DIALOG_Y, 48, 20, win.C_CHROME);
+        win.bevel2(LIST_W - 108, DIALOG_Y, 48, 20, true);
+        win.text(LIST_W - 108 + 14, DIALOG_Y + 2, "OK", win.C_BLACK);
+        win.fillRect(LIST_W - 56, DIALOG_Y, 48, 20, win.C_CHROME);
+        win.bevel2(LIST_W - 56, DIALOG_Y, 48, 20, true);
+        win.text(LIST_W - 56 + 6, DIALOG_Y + 2, "Cancel", win.C_BLACK);
+    }
+
+    // 状态栏：条目数 + 选中项的权限串/属主/大小 + 操作消息
+    win.fillRect(2, CHV - 18, CWV - 4, 16, win.C_CHROME);
+    win.bevel(2, CHV - 18, CWV - 4, 16, false);
     var buf: [128]u8 = undefined;
     var n: usize = putNum(&buf, 0, count);
-    n += putSlice(&buf, n, " items");
-    if (sel) |i| {
+    n += put(&buf, n, " items");
+    if (status_len > 0) {
+        n += put(&buf, n, "  |  ");
+        n += put(&buf, n, status_msg[0..status_len]);
+    } else if (sel) |i| {
         const e = &entries[i];
         var ms: [10]u8 = undefined;
         const mss = zos.modeString(e.mode, &ms);
-        n += putSlice(&buf, n, "  |  ");
-        n += putSlice(&buf, n, mss);
-        n += putSlice(&buf, n, " ");
+        n += put(&buf, n, "  |  ");
+        n += put(&buf, n, mss);
+        n += put(&buf, n, " ");
         n += putNum(&buf, n, e.uid);
-        n += putSlice(&buf, n, ":");
+        n += put(&buf, n, ":");
         n += putNum(&buf, n, e.gid);
-        n += putSlice(&buf, n, " ");
+        n += put(&buf, n, " ");
         n += putNum(&buf, n, prev_total);
-        n += putSlice(&buf, n, " B");
+        n += put(&buf, n, " B");
     }
-    win.text(6, CH - 18, buf[0..n], win.C_BLACK);
-}
-
-fn putSlice(buf: []u8, pos: usize, s: []const u8) usize {
-    const n = @min(s.len, buf.len - pos);
-    @memcpy(buf[pos .. pos + n], s[0..n]);
-    return n;
-}
-
-fn putNum(buf: []u8, pos: usize, v: u64) usize {
-    var tmp: [20]u8 = undefined;
-    var n: usize = 0;
-    var x = v;
-    if (x == 0) {
-        if (pos < buf.len) buf[pos] = '0';
-        return 1;
-    }
-    while (x > 0) {
-        tmp[n] = '0' + @as(u8, @intCast(x % 10));
-        n += 1;
-        x /= 10;
-    }
-    var i: usize = 0;
-    while (i < n and pos + i < buf.len) : (i += 1) buf[pos + i] = tmp[n - 1 - i];
-    return i;
+    win.text(6, CHV - 18, buf[0..n], win.C_BLACK);
 }
 
 fn fmtSize(v: u32, buf: *[7]u8) []const u8 {
@@ -411,7 +731,7 @@ fn dec(buf: *[7]u8, v: u32) usize {
 }
 
 fn drawFolder(x: i32, y: i32) void {
-    const yellow = win.color(255, 224, 96);
+    const yellow = win.C_YELLOW;
     win.fillRect(x + 3, y, 8, 2, yellow);
     win.fillRect(x, y + 2, 14, 7, yellow);
     win.fillRect(x + 2, y - 1, 9, 1, win.C_BLACK);
@@ -463,7 +783,14 @@ export fn main() i32 {
         for (evs[0..n]) |e| {
             switch (e.kind) {
                 win.EV_CLOSE => zos.exit(0),
-                win.EV_PRESS => press(e.x, e.y),
+                win.EV_PRESS => press(e.x, e.y, false),
+                win.EV_DBL => press(e.x, e.y, true),
+                win.EV_KEY => key(e.code),
+                win.EV_ACTIVATE => list(), // 焦点回来 → 重列（保存联动刷新）
+                win.EV_RESIZE => { win.onResizeEvent(e); dirty = true; }, // 最大化/还原：按新表面重画
+                win.EV_MOVE => {
+                    if (menubar.motion(e.x, e.y)) dirty = true;
+                },
                 else => {},
             }
         }

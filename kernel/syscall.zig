@@ -48,6 +48,7 @@ const SYS_uname = 63;
 const SYS_getcwd = 79;
 const SYS_chdir = 80;
 const SYS_dup = 32;
+const SYS_dup2 = 33;
 const SYS_getdents64 = 217;
 const SYS_time = 201;
 // ---- Linux 权限 ----
@@ -63,6 +64,10 @@ const SYS_zos_ping = 501; // ZOS 自定义：ICMP ping
 const SYS_zos_http = 502; // ZOS 自定义：阻塞式 HTTP GET
 const SYS_zos_net_info = 503; // ZOS 自定义：网络配置字符串
 const SYS_zos_beep = 505; // ZOS 自定义：AC'97 蜂鸣（正弦单音）
+const SYS_zos_wav = 506; // ZOS 自定义：播放 WAV 文件（ramfs 路径）
+const SYS_zos_sound = 507; // ZOS 自定义：系统音效（0 click 1 open 2 close 3 ding 4 error 5 tada）
+const SYS_zos_volume = 509; // ZOS 自定义：AC'97 主音量（0..100）
+const SYS_zos_fsinfo = 508; // ZOS 自定义：文件系统概要（df 命令用）
 // ---- ZOS 窗口服务（用户态 GUI 应用）----
 const SYS_win_create = 510;
 const SYS_win_present = 511;
@@ -70,6 +75,14 @@ const SYS_win_poll = 512;
 const SYS_win_wait = 513;
 const SYS_win_color = 514;
 const SYS_win_fmt = 515;
+const SYS_win_clip_set = 516; // ZOS 自定义：写系统剪贴板
+const SYS_win_clip_get = 517; // ZOS 自定义：读系统剪贴板
+const SYS_win_resize = 518; // ZOS 自定义：重分配本进程窗口表面
+const SYS_win_title = 519; // ZOS 自定义：改窗口标题
+// ---- Linux 目录操作 ----
+const SYS_mkdir = 83;
+const SYS_rmdir = 84;
+const SYS_unlink = 87;
 
 // ---- errno ----
 const EPERM: isize = -1;
@@ -87,12 +100,19 @@ const EINVAL: isize = -22;
 const ENOTTY: isize = -25;
 const EROFS: isize = -30;
 const ESPIPE: isize = -29;
+const EIO: isize = -5;
+const ENOSPC: isize = -28;
+const EFBIG: isize = -27;
+const ENOTEMPTY: isize = -39;
 const ENOSYS: isize = -38;
 
 // ---- 常量 ----
 const O_RDONLY: usize = 0;
 const O_WRONLY: usize = 1;
 const O_RDWR: usize = 2;
+const O_CREAT: usize = 0o100;
+const O_EXCL: usize = 0o200;
+const O_TRUNC: usize = 0o1000;
 const O_DIRECTORY: usize = 0o200000;
 
 const PROT_READ: usize = 1;
@@ -135,6 +155,7 @@ pub fn handle(frame: *TrapFrame) void {
         SYS_getcwd => sysGetcwd(a1, a2),
         SYS_chdir => sysChdir(a1),
         SYS_dup => sysDup(a1),
+        SYS_dup2 => sysDup2(a1, a2),
         SYS_getdents64 => sysGetdents64(a1, a2, a3),
         SYS_time => @intCast(pit.uptimeMs() / 1000),
         SYS_chmod => sysChmod(a1, a2),
@@ -148,12 +169,26 @@ pub fn handle(frame: *TrapFrame) void {
         SYS_zos_http => sysHttpGet(a1, @truncate(a2), a3, frame),
         SYS_zos_net_info => sysNetInfo(a1, a2),
         SYS_zos_beep => sysBeep(a1, a2),
+        SYS_zos_wav => sysWav(a1),
+        SYS_zos_sound => @import("audio.zig").playSystem(@truncate(a1)),
+        SYS_zos_volume => blk: {
+            @import("audio.zig").setVolume(@truncate(a1));
+            break :blk 0;
+        },
+        SYS_zos_fsinfo => sysFsInfo(a1, a2),
         SYS_win_create => @import("winsys.zig").sysCreate(a1, a2, a3),
         SYS_win_present => @import("winsys.zig").sysPresent(),
         SYS_win_poll => @import("winsys.zig").sysPoll(a1, a2),
         SYS_win_wait => @import("winsys.zig").sysWait(a1, a2, @intCast(a3)),
         SYS_win_color => @import("winsys.zig").sysColor(a1, a2, a3),
         SYS_win_fmt => @import("winsys.zig").sysFmt(),
+        SYS_win_clip_set => @import("winsys.zig").sysClipSet(a1, a2),
+        SYS_win_clip_get => @import("winsys.zig").sysClipGet(a1, a2),
+        SYS_win_resize => @import("winsys.zig").sysResize(a1, a2),
+        SYS_win_title => @import("winsys.zig").sysTitle(a1),
+        SYS_mkdir => sysMkdir(a1, a2),
+        SYS_rmdir => sysRmdir(a1),
+        SYS_unlink => sysUnlink(a1),
         else => ENOSYS,
     };
 
@@ -198,29 +233,59 @@ fn sysRead(fd: usize, buf: usize, count: usize) isize {
 fn sysWrite(fd: usize, buf: usize, count: usize) isize {
     const p = proc.current().?;
     const f = getFd(p, fd) orelse return EBADF;
-    return vfs.write(f.node, userSliceConst(buf, @min(count, 65536)));
+    const n = vfs.write(f.node, f.pos, userSliceConst(buf, @min(count, 65536)));
+    if (n > 0) f.pos += @intCast(n);
+    return n;
 }
 
 fn sysOpen(path: usize, flags: usize, mode: usize) isize {
-    _ = mode;
     const p = proc.current().?;
     const plen = cstrLen(path, 255);
     if (plen == 0) return EINVAL;
     const path_s = userSliceConst(path, plen);
+    const acc = flags & 3; // O_RDONLY/O_WRONLY/O_RDWR
+    if (acc == 3) return EINVAL;
 
     // 凭证解析：目录遍历查 x；ENOENT 与 EACCES 分开报
-    const node = vfs.resolveCred(path_s, p.cwd(), p.uid, p.gid) catch |e| switch (e) {
-        error.Access => return EACCES,
-        error.NoEnt => return ENOENT,
+    const node: usize = blk: {
+        break :blk vfs.resolveCred(path_s, p.cwd(), p.uid, p.gid) catch |e| switch (e) {
+            error.Access => return EACCES,
+            error.NoEnt => {
+                // O_CREAT：路径不存在且允许创建 → 在父目录下建文件
+                if (flags & O_CREAT == 0) return ENOENT;
+                var norm: [256]u8 = undefined;
+                const n = vfs.normalizePath(path_s, p.cwd(), &norm) orelse return EINVAL;
+                const perm: u32 = if (mode & 0o777 != 0) @intCast(mode & 0o777) else 0o644;
+                break :blk vfs.createFile(norm[0..n], perm, p.uid, p.gid) catch |ce| switch (ce) {
+                    error.Access => return EACCES,
+                    error.NoEnt => return ENOENT,
+                    error.NoSpace => return ENOSPC,
+                    else => return EINVAL,
+                };
+            },
+        };
     };
     const inf = vfs.info(node);
 
-    // 只读文件系统：写打开只允许 console
-    if ((flags & 3) != O_RDONLY and !inf.is_console) return EROFS;
-    if (inf.is_dir and (flags & 3) != O_RDONLY) return EISDIR;
+    if (inf.is_dir and acc != O_RDONLY) return EISDIR;
+    if (inf.is_dir and flags & O_CREAT != 0 and flags & O_EXCL != 0) return EEXIST;
 
-    // 读权限：owner/group/other 的 r 位（root 旁路；console 总可读）
-    if (!inf.is_console and !vfs.mayAccess(inf, p.uid, p.gid, .r)) return EACCES;
+    if (inf.is_dir and acc != O_RDONLY) return EISDIR;
+
+    // 权限：读开查 r 位，写开查 w 位（root 旁路；console 总是放行）
+    if (!inf.is_console) {
+        if (acc != O_WRONLY and !vfs.mayAccess(inf, p.uid, p.gid, .r)) return EACCES;
+        if (acc != O_RDONLY and !vfs.mayAccess(inf, p.uid, p.gid, .w)) return EACCES;
+    }
+
+    // O_TRUNC：打开即清空（只对普通文件有意义；ext2 落盘 / tarfs 改 RAM）
+    if (flags & O_TRUNC != 0 and !inf.is_dir) {
+        if (vfs.isExt2(node)) {
+            vfs.ext2TruncateNode(node);
+        } else if (node >= 2) {
+            @import("tarfs.zig").truncateNode(node - 2);
+        }
+    }
 
     // 分配 fd
     var fd: ?usize = null;
@@ -249,6 +314,16 @@ fn sysDup(fd: usize) isize {
     const i = slot orelse return EAGAIN;
     p.fds[i] = p.fds[fd];
     return @intCast(i);
+}
+
+/// dup2：复制 fd 到指定槽位（shell 的 `> file` 重定向：
+/// 打开文件 → dup2(fd, 1) → stdout 就变成了那个文件）
+fn sysDup2(fd: usize, newfd: usize) isize {
+    const p = proc.current().?;
+    if (getFd(p, fd) == null) return EBADF;
+    if (newfd >= proc.MAX_FD) return EBADF;
+    p.fds[newfd] = p.fds[fd];
+    return @intCast(newfd);
 }
 
 fn sysClose(fd: usize) isize {
@@ -421,7 +496,7 @@ fn sysUname(buf: usize) isize {
     @memset(b, 0);
     copyStr(b[0..65], "ZOS"); // sysname
     copyStr(b[65..130], "zos"); // nodename
-    copyStr(b[130..195], "0.1.0"); // release
+    copyStr(b[130..195], "0.2.0"); // release
     copyStr(b[195..260], "ZOS #1 teaching kernel (zig)"); // version
     copyStr(b[260..325], "x86_64"); // machine
     return 0;
@@ -526,6 +601,8 @@ fn sysChmod(path: usize, mode: usize) isize {
     if (node < 2) return EACCES; // 根目录/控制台不许改（教学简化）
     if (p.uid != 0 and p.uid != inf.uid) return EPERM; // 只有 owner/root
 
+    // ext2 节点：chmod 真正落盘（重启后仍在）；tarfs 节点：RAM 副本
+    if (vfs.ext2SetMode(node, @intCast(mode & 0o7777))) return 0;
     const n = vfs.nodeMut(node) orelse return EACCES;
     n.mode = (n.mode & 0o777000) | @as(u32, @intCast(mode & 0o777));
     return 0;
@@ -541,6 +618,12 @@ fn sysChown(path: usize, uid: usize, gid: i64) isize {
 
     const node = vfs.resolve(path_s, p.cwd()) orelse return ENOENT;
     if (node < 2) return EACCES;
+    // ext2 节点：落盘
+    if (vfs.isExt2(node)) {
+        const g: u32 = if (gid < 0) 0xFFFF_FFFF else @intCast(gid);
+        if (!vfs.ext2SetOwner(node, @intCast(@min(uid, 65535)), g)) return EACCES;
+        return 0;
+    }
     const n = vfs.nodeMut(node) orelse return EACCES;
     n.uid = @intCast(@min(uid, 65535));
     if (gid >= 0) n.gid = @intCast(@min(@as(u64, @intCast(gid)), 65535));
@@ -600,6 +683,76 @@ fn sysNetInfo(buf: usize, len: usize) isize {
 fn sysBeep(freq: usize, ms: usize) isize {
     if (freq < 20 or freq > 8000 or ms == 0 or ms > 10000) return EINVAL;
     return @import("audio.zig").playTone(@intCast(freq), @intCast(ms));
+}
+
+/// zos_wav(path)：读 ramfs WAV 文件并播放（内核以 root 读，root 旁路）。
+/// 文件读取/缓冲在 audio.zig（512KB 静态缓冲——内核栈只有 16KB，
+/// 缓冲绝不能放栈上）。
+fn sysWav(path: usize) isize {
+    const plen = cstrLen(path, 255);
+    if (plen == 0) return EINVAL;
+    return @import("audio.zig").playWavPath(userSliceConst(path, plen), proc.current().?.cwd());
+}
+
+fn sysMkdir(path: usize, mode: usize) isize {
+    const p = proc.current().?;
+    const plen = cstrLen(path, 255);
+    if (plen == 0) return EINVAL;
+    vfs.mkdir(userSliceConst(path, plen), p.cwd(), @intCast(mode & 0o777), p.uid, p.gid) catch |e| switch (e) {
+        error.Exist => return EEXIST,
+        error.Access => return EACCES,
+        error.NoEnt => return ENOENT,
+        error.NotDir => return ENOTDIR,
+        error.NotEmpty => return ENOTEMPTY,
+        error.NoSpace => return ENOSPC,
+        error.BadName => return EINVAL,
+        error.Io => return EIO,
+    };
+    return 0;
+}
+
+fn sysRmdir(path: usize) isize {
+    const p = proc.current().?;
+    const plen = cstrLen(path, 255);
+    if (plen == 0) return EINVAL;
+    vfs.rmdir(userSliceConst(path, plen), p.cwd(), p.uid, p.gid) catch |e| switch (e) {
+        error.Exist => return EACCES,
+        error.Access => return EACCES,
+        error.NoEnt => return ENOENT,
+        error.NotDir => return ENOTDIR,
+        error.NotEmpty => return ENOTEMPTY,
+        error.NoSpace => return ENOSPC,
+        error.BadName => return EINVAL,
+        error.Io => return EIO,
+    };
+    return 0;
+}
+
+fn sysUnlink(path: usize) isize {
+    const p = proc.current().?;
+    const plen = cstrLen(path, 255);
+    if (plen == 0) return EINVAL;
+    vfs.unlink(userSliceConst(path, plen), p.cwd(), p.uid, p.gid) catch |e| switch (e) {
+        error.Exist => return EACCES,
+        error.Access => return EACCES,
+        error.NoEnt => return ENOENT,
+        error.NotDir => return EISDIR,
+        error.NotEmpty => return ENOTEMPTY,
+        error.NoSpace => return ENOSPC,
+        error.BadName => return EINVAL,
+        error.Io => return EIO,
+    };
+    return 0;
+}
+
+/// zos_fsinfo(buf, len)：文件系统概要（df 命令用；未挂载磁盘报 ENOSYS 风格）
+fn sysFsInfo(buf: usize, len: usize) isize {
+    var b: [256]u8 = undefined;
+    const s = vfs.ext2Info(&b) orelse return ENOSYS;
+    if (len < s.len + 1) return EINVAL;
+    @memcpy(userSlice(buf, s.len), s);
+    userSlice(buf, s.len + 1)[s.len] = '\n';
+    return @intCast(s.len + 1);
 }
 
 fn sysPsinfo(buf: usize, max: usize) isize {
