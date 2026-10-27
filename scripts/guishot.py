@@ -214,8 +214,8 @@ def main():
         open_menu_item(MENU["paint"], "Paint")
         time.sleep(0.8)
         shot("8-paint-new")
-        click(75, 68)        # 红色色板 idx2（slot1 工具栏 col0,row1：(69..93,62..75)）
-        drag(200, 150, 420, 280)  # 画布 (171..471, 106..306) 内拖动
+        click(75, 98)        # 红色色板 idx2（客户区 y72 + 6 + 14 → 92..105）
+        drag(200, 180, 420, 270)  # 画布 (135..435, 76..276) 内拖动
         shot("9-paint-draw")
 
         # ---- 计算器（/bin/calc，级联 (132,104)→客户区 (135,132)）----

@@ -42,8 +42,17 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | 63 | uname | (buf) | "ZOS 0.1.0 x86_64" |
 | 79 | getcwd | (buf, size) | 每进程 cwd |
 | 80 | chdir | (path) | 规范化后更新 cwd |
+| 90 | chmod | (path, mode) | 权限位内存态生效（owner/root） |
+| 92 | chown | (path, uid, gid) | root 专属；gid=-1 不改 |
+| 102/104 | getuid/getgid | — | 进程凭证 |
+| 105/106 | setuid/setgid | (uid/gid) | root 任意切；普通人只能切自己 |
 | 201 | time | — | 自开机秒数 |
 | 217 | getdents64 | (fd, buf, count) | 一次性返回目录全部孩子 |
+| 510 | win_create | (w, h, title*) | → 表面用户虚拟地址（用户态 GUI） |
+| 511 | win_present | — | 客户区记脏区，IRQ0 合成上屏 |
+| 512 | win_poll | (ev*, n) | 非阻塞取事件 |
+| 513 | win_wait | (ev*, n, timeout_ms) | 空队列阻塞；事件/超时唤醒 |
+| 514 | win_color | (r, g, b) | → 帧缓冲格式像素值 |
 | 500 | zos_psinfo | (buf, max) | 进程表快照（ps 用） |
 | 501 | zos_ping | (ip, seq) | ICMP ping，返回 RTT(ms) |
 | 502 | zos_http_get | (host, port, path, out*, out_len) | 阻塞式 DNS+TCP+HTTP GET |
