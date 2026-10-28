@@ -861,6 +861,52 @@ pub fn spawnKernel(path: []const u8) bool {
     return ok;
 }
 
+/// 内核服务拉起用户进程（telnetd 远程 sh 用）：fds 0/1 指向给定节点
+/// （sock 节点=网络会话），fd2 留控制台；ppid=1 由 init 收割。
+pub fn spawnSession(fd0_node: usize, name: []const u8) ?*Proc {
+    const slot = allocProcSlot() orelse return null;
+    const p = &procs[slot];
+    p.* = .{};
+    p.pid = allocPid();
+    p.ppid = 1;
+    p.state = .runnable;
+
+    if (!allocKStack(p)) {
+        p.state = .unused;
+        return null;
+    }
+    p.page_map = vmm.newKernelSharedPml4();
+    if (p.page_map == 0) {
+        freeKStack(p);
+        p.state = .unused;
+        return null;
+    }
+    p.fds[0] = .{ .used = true, .node = fd0_node };
+    p.fds[1] = .{ .used = true, .node = fd0_node };
+    p.fds[2] = .{ .used = true, .node = vfs.CONSOLE_NODE };
+    p.cwd_buf[0] = '/';
+    p.cwd_len = 1;
+
+    if (!execIntoFresh(p, "/bin/sh")) {
+        vmm.destroyUserSpace(p.page_map);
+        freeKStack(p);
+        p.state = .unused;
+        return null;
+    }
+    setName(p, name);
+    return p;
+}
+
+/// 进程是否已结束（zombie/unused/dying）——telnetd 收割远程会话用
+pub fn isGone(pid: u32) bool {
+    for (&procs) |*p| {
+        if (p.pid == pid) {
+            return p.state == .zombie or p.state == .unused or p.state == .dying;
+        }
+    }
+    return true;
+}
+
 /// spawnInit 专用：p 尚无用户空间，加载 path 后从其入口进入。
 /// （与 execve 不同：不替换旧空间、由调度器首次调度时进入用户态）
 fn execIntoFresh(p: *Proc, path: []const u8) bool {

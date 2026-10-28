@@ -3,14 +3,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# 远程服务端口映射：4321→guest:23（telnet 式 shell），3122→:3122（zfile 推拉）
 exec qemu-system-x86_64 \
     -cdrom build/zos.iso \
     -drive file=build/disk.img,format=raw,if=ide \
-    -m 256M \
+    -netdev user,id=n0,hostfwd=tcp::4321-:23,hostfwd=tcp::3122-:3122 \
     -display none \
     -serial stdio \
     -no-reboot \
-    -netdev user,id=n0 \
     -device e1000,netdev=n0 \
     -audiodev none,id=snd0 \
     -device AC97,audiodev=snd0 \

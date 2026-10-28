@@ -25,10 +25,13 @@ pub fn init() void {
 
 /// IRQ0 处理：滴答计数 + 唤醒睡眠进程（由调度器注册）
 pub var tick_hook: ?*const fn () void = null; // 进程阶段接入唤醒逻辑
+/// 第二钩子：网络服务（telnetd 的停等重传/文件流）每拍驱动
+pub var srv_hook: ?*const fn () void = null;
 
 pub fn onTick() void {
     ticks += 1;
     if (tick_hook) |h| h();
+    if (srv_hook) |h| h();
 }
 
 pub fn uptimeMs() u64 {

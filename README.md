@@ -95,6 +95,20 @@ df                            # 超级块空闲计数
 宿主机可以用 `debugfs -R "ls -l /" build/disk.img` 直接查看、
 `e2fsck -fn` 体检。详见 [docs/fs.md](docs/fs.md)。
 
+### 远程访问（telnet 式 shell + zfile 推拉，明文无认证）
+
+`zig build run` 已带端口映射（4321→guest:23、3122→:3122）：
+
+```bash
+python3 scripts/zterm.py                    # 宿主机远程登录 ZOS shell
+python3 scripts/zcp.py put 文件 /路径        # 宿主 → ZOS（运行中推送）
+python3 scripts/zcp.py get /etc/motd ./m    # ZOS → 宿主
+```
+
+内核侧实现见 [docs/network.md](docs/network.md)：TCP 服务器
+（go-back-n 滑动窗口）+ telnetd（行规程 + 会话拉起）+ zfile 协议。
+明文无认证——能连上就是 root，教学取舍。
+
 文件互拷（guest ↔ 宿主机）：
 
 ```bash

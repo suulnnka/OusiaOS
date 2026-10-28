@@ -150,6 +150,11 @@ export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
     // （WAV/ramfs 都依赖上面的文件系统就绪）
     @import("gui.zig").lateInit();
 
+    // ---- 远程服务：telnet 式 shell(:23) + zfile 文件推拉(:3122) ----
+    // 依赖 net（IRQ 收包）与 vfs（拉起 /bin/sh、文件读写），之后每拍
+    // 由 pit.srv_hook 驱动发送/收割。宿主机用 -hostfwd 映射进来。
+    @import("telnetd.zig").init();
+
     // ---- 网络（在进程诞生前完成：MMIO 映射随内核半区共享）----
     // ---- 进程与调度 ----
     proc.init();

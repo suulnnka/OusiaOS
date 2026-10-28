@@ -225,6 +225,12 @@ fn sysRead(fd: usize, buf: usize, count: usize) isize {
     const inf = vfs.info(f.node);
     if (inf.is_dir) return EISDIR;
     if (count == 0) return 0;
+    // sock 节点：远程会话端点（telnetd 行规程；无数据时阻塞睡到数据/EOF）
+    if (vfs.isSock(f.node)) {
+        const n = @import("telnetd.zig").sockRead(f.node - vfs.SOCK_BASE, userSlice(buf, @min(count, 65536)));
+        if (n > 0) f.pos += @intCast(n);
+        return n;
+    }
     const n = vfs.read(f.node, f.pos, userSlice(buf, @min(count, 65536)));
     if (n > 0) f.pos += @intCast(n);
     return n;
@@ -233,6 +239,10 @@ fn sysRead(fd: usize, buf: usize, count: usize) isize {
 fn sysWrite(fd: usize, buf: usize, count: usize) isize {
     const p = proc.current().?;
     const f = getFd(p, fd) orelse return EBADF;
+    // sock 节点：写进 TCP 发送环（srvPoll 每拍停等排空）
+    if (vfs.isSock(f.node)) {
+        return @import("telnetd.zig").sockWrite(f.node - vfs.SOCK_BASE, userSliceConst(buf, @min(count, 65536)));
+    }
     const n = vfs.write(f.node, f.pos, userSliceConst(buf, @min(count, 65536)));
     if (n > 0) f.pos += @intCast(n);
     return n;
@@ -413,7 +423,7 @@ fn sysIoctl(fd: usize, req: usize, arg: usize) isize {
 fn sysLseek(fd: usize, off: usize, whence: usize) isize {
     const p = proc.current().?;
     const f = getFd(p, fd) orelse return EBADF;
-    if (f.node == vfs.CONSOLE_NODE) return ESPIPE;
+    if (f.node == vfs.CONSOLE_NODE or vfs.isSock(f.node)) return ESPIPE;
     const inf = vfs.info(f.node);
     const base: i64 = switch (whence) {
         0 => 0, // SEEK_SET

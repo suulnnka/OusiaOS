@@ -1,10 +1,14 @@
 //! 网络栈：以太网 / ARP / IPv4 / ICMP / UDP+DNS / TCP(停等) / HTTP GET
+//!         + TCP 服务器（telnetd/zfile 的底座：监听/握手/收发环/重传）
 //!
 //! 教学要点：
 //!   - 分层逐字节构造/解析报文（这是理解协议的最短路径）
 //!   - 校验和（Internet checksum）：16 位字反码求和再取反
-//!   - TCP 用"停等"教学实现：发一段等 ACK，收数据立即 ACK；
+//!   - TCP 用"停等"教学实现：发一段等 ACK，超时重传；收数据立即 ACK；
 //!     完整滑动窗口/拥塞控制是练习
+//!   - 服务器侧（本文件下半部）：固定 2 个监听槽，每个槽一条被动连接。
+//!     握手在收包路径完成；发送走字节环 + 每 tick 由 srvPoll 驱动
+//!     （停等重传同款）；阻塞读 = 进程 blocked + 数据到达 wake
 //!   - 阻塞等待用 sti+hlt+cli 模式（时钟醒来后轮询网卡），
 //!     一次只有一个进程能持有 net 锁（大内核锁的教科书案例）
 //!
@@ -14,6 +18,7 @@
 const console = @import("console.zig");
 const e1000 = @import("e1000.zig");
 const pit = @import("pit.zig");
+const proc = @import("proc.zig");
 
 // ---------------- 配置 ----------------
 
@@ -271,6 +276,50 @@ const TCP_SYN: u16 = 0x02;
 const TCP_RST: u16 = 0x04;
 const TCP_PSH: u16 = 0x08;
 const TCP_ACK: u16 = 0x10;
+
+/// 服务器侧 MSS：1460 + TCP20 + IP20 + 以太14 = 1514，恰好塞满一帧
+const SRV_MSS: usize = 1460;
+
+/// 通用 TCP 段发送（客户端/服务器共用；seq/ack/端口全显式）
+fn sendSegRaw(their_ip: u32, sport: u16, dport: u16, flags: u16, seq: u32, ack: u32, data: []const u8) bool {
+    var seg: [SRV_MSS + 20]u8 = undefined;
+    if (20 + data.len > seg.len) return false;
+    const h: *align(1) TcpHeader = @ptrCast(&seg);
+    h.* = .{
+        .sport = htons(sport),
+        .dport = htons(dport),
+        .seq = htonl(seq),
+        .ack = htonl(ack),
+        .off_flags = htons((5 << 12) | flags),
+        .window = htons(16384),
+        .checksum_ = 0,
+        .urgptr = 0,
+    };
+    @memcpy(seg[20 .. 20 + data.len], data);
+    h.checksum_ = htons(tcpChecksum(seg[0 .. 20 + data.len], IP_OUR, their_ip));
+    return sendIp(their_ip, PROTO_TCP, seg[0 .. 20 + data.len]);
+}
+
+fn tcpChecksum(segment: []const u8, src: u32, dst: u32) u16 {
+    // 伪头 + TCP 段（服务器 MSS 下最长 12+1480）
+    var buf: [1600]u8 = undefined;
+    const pseudo_len = 12 + segment.len;
+    if (pseudo_len > buf.len) return 0;
+    buf[0] = @truncate(src >> 24);
+    buf[1] = @truncate(src >> 16);
+    buf[2] = @truncate(src >> 8);
+    buf[3] = @truncate(src);
+    buf[4] = @truncate(dst >> 24);
+    buf[5] = @truncate(dst >> 16);
+    buf[6] = @truncate(dst >> 8);
+    buf[7] = @truncate(dst);
+    buf[8] = 0;
+    buf[9] = PROTO_TCP;
+    buf[10] = @truncate(segment.len >> 8);
+    buf[11] = @truncate(segment.len);
+    @memcpy(buf[12..pseudo_len], segment);
+    return checksum(buf[0..pseudo_len]);
+}
 
 var ip_id: u16 = 1;
 
@@ -599,27 +648,6 @@ const TcpState = struct {
 
 var tcp: TcpState = .{};
 
-fn tcpChecksum(segment: []const u8, src: u32, dst: u32) u16 {
-    // 伪头 + TCP 段
-    var buf: [1280]u8 = undefined;
-    const pseudo_len = 12 + segment.len;
-    if (pseudo_len > buf.len) return 0;
-    buf[0] = @truncate(src >> 24);
-    buf[1] = @truncate(src >> 16);
-    buf[2] = @truncate(src >> 8);
-    buf[3] = @truncate(src);
-    buf[4] = @truncate(dst >> 24);
-    buf[5] = @truncate(dst >> 16);
-    buf[6] = @truncate(dst >> 8);
-    buf[7] = @truncate(dst);
-    buf[8] = 0;
-    buf[9] = PROTO_TCP;
-    buf[10] = @truncate(segment.len >> 8);
-    buf[11] = @truncate(segment.len);
-    @memcpy(buf[12..pseudo_len], segment);
-    return checksum(buf[0..pseudo_len]);
-}
-
 fn sendTcpSeg(flags: u16, seq: u32, ack: u32, data: []const u8, keep_retrans: bool) bool {
     var seg: [536 + 20]u8 = undefined;
     if (20 + data.len > seg.len) return false;
@@ -645,7 +673,21 @@ fn sendTcpSeg(flags: u16, seq: u32, ack: u32, data: []const u8, keep_retrans: bo
     return sendIp(tcp.their_ip, PROTO_TCP, seg[0 .. 20 + data.len]);
 }
 
+/// TCP 收包分发：客户端连接（httpGet）与服务器连接（监听槽）按
+/// 四元组各归各的处理路径
 fn handleTcp(src_ip: u32, ip_payload: []const u8) void {
+    if (ip_payload.len < 20) return;
+    const h: *align(1) const TcpHeader = @ptrCast(ip_payload.ptr);
+    if (tcp.state != .idle and
+        htons(h.dport) == tcp.our_port and htons(h.sport) == tcp.their_port and src_ip == tcp.their_ip)
+    {
+        handleTcpClient(src_ip, ip_payload);
+        return;
+    }
+    handleTcpServer(src_ip, ip_payload);
+}
+
+fn handleTcpClient(src_ip: u32, ip_payload: []const u8) void {
     if (ip_payload.len < 20 or tcp.state == .idle) return;
     const h: *align(1) const TcpHeader = @ptrCast(ip_payload.ptr);
     if (htons(h.sport) != tcp.their_port or htons(h.dport) != tcp.our_port) return;
@@ -802,6 +844,299 @@ fn fmtGet(buf: []u8, host: []const u8, port: u16, path: []const u8) usize {
     w.put(buf, &n, host);
     w.put(buf, &n, "\r\nUser-Agent: zos-curl/0.1\r\n\r\n");
     return n;
+}
+
+// ---------------- TCP 服务器（telnetd/zfile 的底座） ----------------
+//
+// 教学要点：被动打开 = "预先登记端口 + 收 SYN 逐半建连接"。每个监听槽
+// 一条连接（同一时刻一个端口一个会话——教学简化）。发送侧是字节环 +
+// 每拍由 srvPoll 驱动的停等重传（与客户端同款，只是驱动源从"进程忙等"
+// 换成"时钟钩子"，这样 sh 进程不必为输出操心）；接收侧按序数据直接
+// 交给服务层回调（data_hook），行装配/文件写入都在那层。
+//
+// 并发：handleFrame 可能在 IRQ 或进程轮询路径被调，全部状态变更都在
+// 短 cli 临界区里完成（与 gui.addDamage 同款约定）。
+
+const SrvService = enum { none, shell, file };
+
+const SrvState = enum { idle, syn_rcvd, established, closed };
+
+const SrvConn = struct {
+    state: SrvState = .idle,
+    service: SrvService = .none,
+    their_ip: u32 = 0,
+    their_port: u16 = 0,
+    our_port: u16 = 0,
+    iss: u32 = 0,
+    snd_nxt: u32 = 0, // 下一个发送序号（SYN/数据/FIN 依次推进）
+    rcv_nxt: u32 = 0, // 期待接收序号（= 已确认收到的最后一个字节+1）
+    fin_received: bool = false,
+    rst: bool = false,
+    fin_sent: bool = false,
+    // 发送环 [head, tail) 持有全部未确认字节；head 对应 snd_una。
+    // 滑动窗口（go-back-n）：在途 ≤ WINDOW，ACK 推进 head，超时从
+    // snd_una 重发一段并把 snd_nxt 收回去——比纯停等快一个数量级
+    // （对端 Linux 有延迟 ACK，逐段停等会被拖到 40ms+/段）
+    tx: [32 * 1024]u8 = undefined,
+    tx_head: usize = 0,
+    tx_tail: usize = 0,
+    tx_dropped: usize = 0, // 环满被丢的字节（教学可见性）
+    snd_una: u32 = 0, // 最低未确认序号
+    last_send: u64 = 0, // 最近一次发段时刻（重传基准）
+    fin_requested: bool = false,
+    // 阻塞读的进程（sockRead 挂起在这里；数据/关闭时 wake）
+    waiter_pid: u32 = 0,
+    // 服务层自由区（telnetd 放会话 pid 等）
+    cookie: u32 = 0,
+};
+
+/// 服务器发送窗口（在途字节数上限）
+const SRV_WINDOW: u32 = 8 * SRV_MSS;
+
+const SRV_N = 2;
+var srv: [SRV_N]SrvConn = @splat(.{});
+
+/// 服务层钩子（telnetd.init 时注册）
+pub var data_hook: ?*const fn (idx: usize, bytes: []const u8) void = null;
+pub var established_hook: ?*const fn (idx: usize) void = null;
+
+/// 登记 idx 号槽为监听端口（service 决定端口命中后交谁处理）
+pub fn listen(idx: usize, port: u16, service: SrvService) bool {
+    if (idx >= SRV_N or srv[idx].state != .idle) return false;
+    srv[idx].our_port = port;
+    srv[idx].service = service;
+    return true;
+}
+
+pub fn srvClosed(idx: usize) bool {
+    const c = &srv[idx];
+    return c.fin_received or c.rst or c.state == .closed;
+}
+
+pub fn setWaiter(idx: usize, pid: u32) void {
+    srv[idx].waiter_pid = pid;
+}
+
+pub fn wakeWaiter(idx: usize) void {
+    const c = &srv[idx];
+    if (c.waiter_pid != 0) {
+        proc.wake(c.waiter_pid);
+        c.waiter_pid = 0;
+    }
+}
+
+pub fn srvSetCookie(idx: usize, v: u32) void {
+    srv[idx].cookie = v;
+}
+
+pub fn txCapacity(idx: usize) usize {
+    return srv[idx].tx.len;
+}
+
+/// 环内已用字节数（距离公式——head==tail 恒为 0，不受位置影响；
+/// 经典坑：用 tail>=head 判方向会在"空但非零位"时把空环算成近满环）
+fn srvTxUsed(c: *const SrvConn) usize {
+    return (c.tx_tail + c.tx.len - c.tx_head) % c.tx.len;
+}
+
+/// 服务层写：追加到发送环（满则截断并计数——排空由 poll 驱动）
+pub fn srvWrite(idx: usize, bytes: []const u8) usize {
+    const c = &srv[idx];
+    var n: usize = 0;
+    while (n < bytes.len) {
+        const free = c.tx.len - srvTxUsed(c);
+        if (free == 0) {
+            c.tx_dropped += bytes.len - n;
+            break;
+        }
+        const take = @min(free, bytes.len - n, c.tx.len - c.tx_tail);
+        @memcpy(c.tx[c.tx_tail .. c.tx_tail + take], bytes[n .. n + take]);
+        c.tx_tail = (c.tx_tail + take) % c.tx.len;
+        n += take;
+    }
+    return n;
+}
+
+pub fn srvTxSpace(idx: usize) usize {
+    return srv[idx].tx.len - srvTxUsed(&srv[idx]);
+}
+
+/// 请求关闭：FIN 等发送环排空后才发（保证尾部数据先出门）
+pub fn srvClose(idx: usize) void {
+    const c = &srv[idx];
+    if (c.state == .idle or c.state == .closed) return;
+    c.fin_requested = true;
+    wakeWaiter(idx);
+}
+
+/// 复位槽位到 idle（服务层在会话彻底结束后调用）
+pub fn srvReset(idx: usize) void {
+    const c = &srv[idx];
+    c.* = .{ .our_port = c.our_port, .service = c.service };
+}
+
+/// 在途字节数（snd_nxt - snd_una，序号回绕安全）
+fn srvInFlight(c: *const SrvConn) u32 {
+    return c.snd_nxt -% c.snd_una;
+}
+
+/// 每拍驱动：重传 → 填满窗口 → 排空后的 FIN。telnetd.poll 里首先调用。
+pub fn srvPoll() void {
+    for (&srv, 0..) |*c, idx| {
+        _ = idx;
+        if (c.state == .idle or c.state == .syn_rcvd) continue;
+        if (c.state != .established) continue;
+
+        const in_flight = srvInFlight(c);
+
+        // 环内 [起点, tail) 的可用字节数（模长距离，回绕安全——环形缓冲
+        // 的经典坑：直接 head+offset 切片会在回绕处越界）
+        const distFrom = struct {
+            fn f(tail: usize, pos: usize, cap: usize) usize {
+                return (tail + cap - pos) % cap;
+            }
+        }.f;
+
+        // 重传：在途超过 15 拍（150ms）未确认 → 经典 go-back-n：整个窗口
+        // 从 snd_una 重发。不能只发一段回卷 snd_nxt——客户端对先前已收
+        // 字节的 ACK 会落在回卷线之外被拒收（advance<=flight 判掉），
+        // 环永不释放 → 死锁。整窗重发让序号线与 snd_max 保持一致。
+        if (in_flight > 0 and pit.ticks - c.last_send > 15) {
+            var n: u32 = 0;
+            while (n < in_flight) {
+                const pos = (c.tx_head + @as(usize, @intCast(n))) % c.tx.len;
+                const dist = distFrom(c.tx_tail, pos, c.tx.len);
+                // take 同时受"到环尾的线性距离"约束——pos 逼近 tx.len 时
+                // 不约束会切出界（环形缓冲回绕的经典坑，第二形态）
+                const take = @min(@min(dist, SRV_MSS), @as(usize, in_flight - n));
+                const linear = @min(take, c.tx.len - pos);
+                if (linear == 0) break;
+                _ = sendSegRaw(c.their_ip, c.our_port, c.their_port, TCP_ACK | TCP_PSH, c.snd_una +% n, c.rcv_nxt, c.tx[pos .. pos + linear]);
+                n += linear;
+            }
+            c.snd_nxt = c.snd_una +% in_flight;
+            c.last_send = pit.ticks;
+        }
+
+        // 填窗口：在途 < WINDOW 且还有排队字节（发送点 = head + 在途，可能回绕）
+        var flight = srvInFlight(c);
+        while (flight < SRV_WINDOW and !c.fin_received) {
+            const send_pos = (c.tx_head + @as(usize, @intCast(flight))) % c.tx.len;
+            const dist = distFrom(c.tx_tail, send_pos, c.tx.len);
+            const take = @min(@min(dist, SRV_MSS), @as(usize, SRV_WINDOW - flight));
+            const linear = @min(take, c.tx.len - send_pos);
+            if (linear == 0) break;
+            _ = sendSegRaw(c.their_ip, c.our_port, c.their_port, TCP_ACK | TCP_PSH, c.snd_nxt, c.rcv_nxt, c.tx[send_pos .. send_pos + linear]);
+            c.snd_nxt +%= @intCast(linear);
+            c.last_send = pit.ticks;
+            flight += linear;
+        }
+
+        // FIN：数据排空后才发（fin_requested 由 srvClose 设置）
+        if (c.fin_requested and !c.fin_sent and c.tx_head == c.tx_tail and srvInFlight(c) == 0) {
+            _ = sendSegRaw(c.their_ip, c.our_port, c.their_port, TCP_FIN | TCP_ACK, c.snd_nxt, c.rcv_nxt, &.{});
+            c.snd_nxt +%= 1;
+            c.fin_sent = true;
+        }
+    }
+}
+
+fn handleTcpServer(src_ip: u32, ip_payload: []const u8) void {
+    const h: *align(1) const TcpHeader = @ptrCast(ip_payload.ptr);
+    const dport = htons(h.dport);
+    const sport = htons(h.sport);
+
+    const off = (@as(usize, htons(h.off_flags) >> 12)) * 4;
+    if (off < 20 or off > ip_payload.len) return;
+    const flags = htons(h.off_flags) & 0x01FF;
+    const seq = htonl(h.seq);
+    const ack = htonl(h.ack);
+    const data = ip_payload[off..];
+
+    for (&srv, 0..) |*c, idx| {
+        // ---- 已有连接：按四元组匹配 ----
+        if (c.state != .idle and c.our_port == dport and c.their_port == sport and c.their_ip == src_ip) {
+            srvEstablishedPkt(c, idx, flags, seq, ack, data);
+            return;
+        }
+        // ---- 新连接：SYN 命中监听端口 ----
+        if (c.state == .idle and c.our_port == dport and flags & TCP_SYN != 0 and flags & TCP_ACK == 0) {
+            c.their_ip = src_ip;
+            c.their_port = sport;
+            c.iss = @truncate(pit.uptimeMs() * 7919 + 12345 + idx * 977);
+            c.snd_nxt = c.iss + 1;
+            c.rcv_nxt = seq +% 1;
+            c.fin_received = false;
+            c.rst = false;
+            c.fin_sent = false;
+            c.fin_requested = false;
+            c.tx_head = 0;
+            c.tx_tail = 0;
+            c.tx_dropped = 0;
+            c.waiter_pid = 0;
+            c.state = .syn_rcvd;
+            _ = sendSegRaw(src_ip, c.our_port, sport, TCP_SYN | TCP_ACK, c.iss, c.rcv_nxt, &.{});
+            return;
+        }
+    }
+    // 没有监听端口命中：RST 婉拒（对无服务的端口礼貌回绝）
+    if (flags & TCP_RST == 0) {
+        _ = sendSegRaw(src_ip, dport, sport, TCP_RST, ack, seq +% @as(u32, @intCast(data.len)) +% @as(u32, @intFromBool(flags & TCP_FIN != 0)), &.{});
+    }
+}
+
+fn srvEstablishedPkt(c: *SrvConn, idx: usize, flags: u16, seq: u32, ack: u32, data: []const u8) void {
+    if (flags & TCP_RST != 0) {
+        c.rst = true;
+        c.state = .closed;
+        wakeWaiter(idx);
+        return;
+    }
+    if (flags & TCP_SYN != 0 and c.state == .syn_rcvd) {
+        // SYN 重传：再发一次 SYN-ACK
+        _ = sendSegRaw(c.their_ip, c.our_port, c.their_port, TCP_SYN | TCP_ACK, c.iss, c.rcv_nxt, &.{});
+        return;
+    }
+    if (flags & TCP_ACK != 0) {
+        if (c.state == .syn_rcvd and ack >= c.iss + 1) {
+            // 握手完成：三次握手的第三步。服务层在这拉起会话
+            c.state = .established;
+            c.snd_una = c.iss + 1;
+            if (established_hook) |hook| hook(idx);
+        }
+        // ACK 前沿推进：释放 [snd_una, ack) 的环空间（乱序/老 ACK 忽略）
+        if (c.state == .established) {
+            const flight = srvInFlight(c);
+            const advance = ack -% c.snd_una;
+            if (advance > 0 and advance <= flight) {
+                const freed: usize = @intCast(advance);
+                c.tx_head = (c.tx_head + freed) % c.tx.len;
+                c.snd_una = ack;
+            }
+        }
+        if (c.fin_sent and ack >= c.snd_nxt) {
+            c.state = .closed; // 我方 FIN 已确认
+            wakeWaiter(idx);
+        }
+    }
+    // 按序数据 → 交服务层；乱序/重传 → 只重 ACK（rcv_nxt 不动）
+    var consumed = false;
+    if (data.len > 0 and seq == c.rcv_nxt and c.state == .established) {
+        c.rcv_nxt +%= @intCast(data.len);
+        consumed = true;
+        if (data_hook) |hook| hook(idx, data);
+    }
+    if (flags & TCP_FIN != 0 and seq +% @as(u32, @intCast(data.len)) == c.rcv_nxt) {
+        c.fin_received = true;
+        c.rcv_nxt +%= 1;
+        consumed = true;
+        wakeWaiter(idx); // 读端拿到 EOF
+    }
+    if (flags & TCP_ACK != 0 or consumed) {
+        if (c.state == .established or c.fin_received) {
+            _ = sendSegRaw(c.their_ip, c.our_port, c.their_port, TCP_ACK, c.snd_nxt, c.rcv_nxt, &.{});
+        }
+    }
 }
 
 // ---------------- 收包分发 ----------------

@@ -21,7 +21,12 @@ export fn main() i32 {
         zos.printf("{s} $ ", .{cstr(&cwd)});
 
         const n = zos.read(0, &line);
-        if (n <= 0) continue;
+        if (n < 0) continue;
+        if (n == 0) {
+            // stdin EOF：远程会话被对端关闭（console 读不会返回 0）
+            if (zos.getpid() != 1) return 0; // PID 1 的 console sh 永不该退
+            continue;
+        }
         var args_buf: [8][64]u8 = undefined;
         const raw = split(cstr(line[0..@intCast(n)]), &args_buf);
         if (raw.len == 0) continue;

@@ -22,7 +22,8 @@ QEMU_CMD = [
     "-m", "256M",
     "-display", "none",
     "-no-reboot",
-    "-netdev", "user,id=n0",
+    # 远程服务端口映射：4321→guest:23（telnet shell），3122→:3122（zfile）
+    "-netdev", "user,id=n0,hostfwd=tcp::4321-:23,hostfwd=tcp::3122-:3122",
     "-device", "e1000,netdev=n0",
     # 声卡在场（无音频后端，静音）——回归顺便覆盖 audio.init 路径
     "-audiodev", "none,id=snd0",
@@ -63,7 +64,114 @@ def start_fixture_httpd():
     return httpd
 
 
-def run_session(commands, disk):
+def remote_phase(master):
+    """远程服务验证：telnet shell（:4321→23）+ zfile 推拉（:3122）。
+
+    注意：这里用独立的串口读取缓冲（不复用外层累积缓冲——里面的旧
+    "$ " 会造成假匹配，测试抢在命令执行前跑完，全绿假象）。
+    """
+    import socket
+    ok = True
+
+    def fail(msg):
+        nonlocal ok
+        print(f"\n[FAIL] {msg}")
+        ok = False
+
+    def ser(cmd):
+        """串口执行一条命令：发 → 收新输出直到提示符。返回期间输出。"""
+        os.write(master, cmd.encode() + b"\n")
+        acc = b""
+        end = time.time() + CMD_TIMEOUT
+        while time.time() < end:
+            r, _, _ = select.select([master], [], [], 0.5)
+            if r:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                acc += chunk
+                if b"$ " in acc:
+                    break
+        time.sleep(0.2)
+        return acc
+
+    def zcp(*args):
+        return subprocess.run([sys.executable, "scripts/zcp.py", *args],
+                              capture_output=True, text=True, timeout=60)
+
+    # ---- 1) 远程 shell：提示符 / 回显 / 退格行编辑 / 读盘 ----
+    try:
+        s = socket.create_connection(("127.0.0.1", 4321), timeout=15)
+        s.settimeout(15)
+        buf = b""
+
+        def until(pat, tmo=15):
+            nonlocal buf
+            end = time.time() + tmo
+            while time.time() < end:
+                r, _, _ = select.select([s], [], [], 0.5)
+                if r:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        return False
+                    buf += chunk
+                    if pat in buf:
+                        return True
+            return False
+
+        if not until(b"$ "):
+            fail("远程 shell 未出现提示符")
+        s.sendall(b"echo remote-shell-works\n")
+        if not until(b"remote-shell-works"):
+            fail("远程 echo 未回显")
+        # 退格：abc + BS + def → echo abdef（行编辑在 ZOS 侧完成）
+        s.sendall(b"echo abc\x7fdef\n")
+        if not until(b"abdef"):
+            fail("远程退格行编辑未生效")
+        s.sendall(b"cat /etc/issue\n")
+        if not until(b"ZOS"):
+            fail("远程 cat 未读到 /etc/issue")
+        s.sendall(b"exit\n")
+        until(b"[connection closed]", 10)
+        s.close()
+    except OSError as e:
+        fail(f"远程 shell 连接失败: {e}")
+
+    # ---- 2) zfile push：宿主 → ZOS 落盘，串口 cat 验证内容 ----
+    payload = b"hello-from-zcp\n" + (b"zos-payload-line\n" * 12)
+    with open("/tmp/znet-up.txt", "wb") as f:
+        f.write(payload)
+    r = zcp("put", "/tmp/znet-up.txt", "/net-up.txt")
+    if r.returncode != 0:
+        fail(f"zcp put 失败: {r.stdout}{r.stderr}")
+    else:
+        out = ser("cat /net-up.txt")
+        if b"hello-from-zcp" in out and b"zos-payload-line" in out:
+            print("[OK] zfile put 内容经串口核对一致")
+        else:
+            fail("zfile put 内容不一致（串口 cat）")
+
+    # ---- 3) zfile pull：串口 cp → 宿主 get → 逐字节比对 ----
+    ser("cp /etc/motd /net-dl.txt")
+    r = zcp("get", "/net-dl.txt", "/tmp/znet-dl.txt")
+    if r.returncode != 0:
+        fail(f"zcp get 失败: {r.stdout}{r.stderr}")
+    else:
+        want = open("rootfs/etc/motd", "rb").read()
+        got = open("/tmp/znet-dl.txt", "rb").read()
+        if got == want:
+            print("[OK] zfile get 与磁盘内容逐字节一致")
+        else:
+            fail(f"zfile get 内容不一致 ({len(got)} vs {len(want)})")
+
+    ser("rm /net-up.txt /net-dl.txt")
+    return ok
+
+
+def run_session(commands, disk, remote=True):
     master, slave = pty.openpty()
     proc = subprocess.Popen(
         QEMU_CMD + ["-drive", f"file={disk},format=raw,if=ide", "-serial", "stdio"],
@@ -109,6 +217,8 @@ def run_session(commands, disk):
                 ok = False
                 break
             time.sleep(0.2)
+        if ok and remote:
+            ok = remote_phase(master)
     finally:
         proc.terminate()
         try:

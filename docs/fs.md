@@ -213,12 +213,19 @@ execve 从 ext2 读 ELF：整文件读入 8MB 暂存缓冲（`proc.zig` 的
 ```
 
 **通道二：guest 内 cp**——`cp <src> <dst>`（dst 是目录则拷入其中，
-权限位跟随源文件），经 VFS 在 ext2 上真落盘；系统运行中与宿主机
-的批量交换可以"先 put → 重启 → guest 内 cp 挪位"或反向。
+权限位跟随源文件），经 VFS 在 ext2 上真落盘。
 
-网络通道：curl 只做 HTTP GET（下载 = 单向拷入）；实现 PUT 上传
-（net.zig 停等 TCP 已具备）是现成的练习。QEMU 运行中不要用
-disk.sh 碰镜像——两个写者同时操作一个块设备会互相踩。
+**通道三：网络（系统运行中，双向）**——zfile 协议（类 scp，
+端口 3122→宿主 hostfwd）：
+
+```bash
+python3 scripts/zcp.py put <本地文件> <ZOS路径>   # 拷入（QEMU 运行中）
+python3 scripts/zcp.py get <ZOS路径> <本地文件>   # 拷出
+```
+
+（curl 只做 HTTP GET，那是下载的另一种形态；zfile 是专用的双向
+文件通道，内核以 root 落盘。）QEMU 运行中不要用 disk.sh 碰镜像
+——两个写者同时操作一个块设备会互相踩；运行中交换走本通道。
 
 ## 10. 制作与检查磁盘镜像
 

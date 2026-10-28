@@ -210,6 +210,30 @@ lock → resolve(host)（IP 或 DNS）→ ARP 网关
 这意味着**空闲时到达的包**（如测试机发的 ARP）也能进协议栈，
 不只服务于当前会话。
 
+## 5.5 TCP 服务器与远程服务（telnetd.zig）
+
+net.zig 的下半部是**被动打开**侧：固定 2 个监听槽（每槽一条连接），
+握手在收包路径完成，发送走字节环 + 每拍由 `srv_hook` 驱动的
+**go-back-n 小滑动窗口**（8×MSS 在途；纯停等会被对端 Linux 的
+延迟 ACK 拖到 40ms+/段）。三个环形缓冲的经典坑都在这里踩过并留了
+注释：空/满歧义（用距离公式）、回绕处切片越界（受"到环尾线性距离"
+约束）、GBN 回卷序号线导致对端 ACK 被拒收（整窗重发保持一致）。
+
+服务层（`telnetd.zig`）挂 `data_hook/established_hook` 两个回调：
+
+| 服务 | 端口 | 语义 |
+|---|---|---|
+| 远程 shell | 23 | 行规程（回显/退格/CRLF/IAC 剥离）→ 完整行投递；连接建立即 `proc.spawnSession` 拉起 `/bin/sh`，其 stdin/stdout 直接指向 sock 节点（fd 抽象的胜利：sh 不知道对面是网络）；阻塞读 = 进程 blocked + 数据到达 wake；连接关闭 → EOF → sh 退出 → 每拍收割 |
+| zfile | 3122 | 类 scp 协议：`GET /path` → `OK <size>\n`+字节流；`PUT /path <size>`+字节流 → `OK\n`；内核以 root 读写 vfs（ext2 落盘）。流式状态机（一包可能同时含命令头与正文开头） |
+
+宿主机客户端：`scripts/zterm.py`（远程终端）、`scripts/zcp.py get/put`
+（文件推拉）。QEMU 需要 `-netdev user,...,hostfwd=tcp::4321-:23,
+hostfwd=tcp::3122-:3122`（run.sh/test.py 已带）。
+
+安全声明：这是 1971 年的明文世界——无认证无加密，能连上端口就是
+root。SSH 是进阶练习（SHA-256/X25519/Ed25519/ChaCha20-Poly1305，
+估 2500-3500 行，见 docs/fs.md 取舍清单）。
+
 ## 6. 常量速查
 
 | 常量 | 值 | 位置 |
@@ -219,9 +243,12 @@ lock → resolve(host)（IP 或 DNS）→ ARP 网关
 | ARP 缓存 | 8 项；解析 300ms×3 | net.zig |
 | ping 超时 | 1s | net.zig |
 | DNS | 端口 40000→53，500ms×2 | net.zig |
-| TCP 段上限 | 536B 数据；发送窗口通告 4096 | net.zig |
+| TCP 段上限 | 536B 数据；发送窗口通告 4096 | net.zig（客户端） |
+| 服务器 MSS/窗口 | 1460B（塞满一帧）/ 8 段在途 go-back-n | net.zig |
 | TCP 重传 | 1s 等 ACK ×4；接收缓冲 64KB | net.zig |
+| 服务器重传 | 150ms 超时，整窗重发 | net.zig |
 | HTTP 总超时 | 15s | net.zig |
+| 监听槽 | 2 个（:23 shell / :3122 zfile），每槽一连接 | telnetd.zig |
 
 ## 7. 扩展练习方向
 

@@ -25,6 +25,14 @@ pub const ROOT_NODE: usize = 0;
 pub const CONSOLE_NODE: usize = 1;
 const TARFS_BASE: usize = 2;
 pub const EXT2_BASE: usize = 1024;
+/// sock 节点段（远程会话的 fd 指向这里；SOCK_BASE+conn 编号）。
+/// 段起点避开 tarfs（≤258）与 ext2（≤1024+maxIno≈25.6k）。
+pub const SOCK_BASE: usize = 60000;
+pub const SOCK_MAX: usize = 4;
+
+pub fn isSock(node: usize) bool {
+    return node >= SOCK_BASE and node < SOCK_BASE + SOCK_MAX;
+}
 
 pub fn init() void {
     // tarfs.init() 已在 main 里填充节点表；本模块无需额外初始化
@@ -254,6 +262,10 @@ pub fn info(node: usize) NodeInfo {
     }
     if (node == CONSOLE_NODE) {
         return .{ .is_dir = false, .is_console = true, .size = 0, .mode = 0o020600, .uid = 0, .gid = 0 };
+    }
+    if (isSock(node)) {
+        // 远程会话端点：字符设备语义（size 0；root 使用，权限放行）
+        return .{ .is_dir = false, .is_console = false, .size = 0, .mode = 0o020600, .uid = 0, .gid = 0 };
     }
     if (isExt2(node)) {
         // ext2 的 mode 字段与 Linux 同款（类型位 + rwxrwxrwx），直接透传
