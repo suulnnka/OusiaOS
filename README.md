@@ -331,6 +331,16 @@ zig cc -target x86_64-freestanding -O1 -nostdlib -no-pie \
 `wc.c`（Unix 字数统计工具）与 `cdemo.c`（libc 全家桶自检）就是两个活例子；
 Zig 程序与 C 程序可以互相 fork/exec，共存于同一个 initrd。
 
+也可用自研 C 工具链 **occ**（OusiaC 项目，`../ccompiler`，原名 zcc）一步编译，
+它自带汇编器 oas 与链接器 old，不依赖 zig cc：
+
+```bash
+../ccompiler/zig-out/bin/occ userland/foo.c -o zig-out/bin/user/foo
+```
+
+`../ccompiler/scripts/e2e.sh` 就是全程用 occ 编译 wc/cdemo，并与 zig cc 版
+逐字节对比验证一致性。
+
 ### 移植时的已知边界
 
 - 无环境变量（execve 不传 envp，`getenv` 恒返回 NULL）；

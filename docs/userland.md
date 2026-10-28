@@ -145,7 +145,10 @@ zig cc -target x86_64-freestanding -O1 -nostdlib -no-pie \
 
 - **静态 ELF，基址 0x400000**（user.ld），无 PIE；
 - 链接 libousia.a（libc.zig+clib.c+crt0 打包）；
-- 新程序自动进 initrd（mkinitrd.sh 合并 zig-out/bin/user → /bin/）。
+- 新程序自动进 initrd（mkinitrd.sh 合并 zig-out/bin/user → /bin/）；
+- 也可用自研 C 工具链 **occ**（OusiaC 项目，`../ccompiler`，原名 zcc）
+  替代 zig cc：`occ userland/foo.c -o zig-out/bin/user/foo`——
+  occ 自带汇编器 oas + 链接器 old，直接链接 libousia.a，一步出可执行文件。
 
 ### 6.1 现成示例
 

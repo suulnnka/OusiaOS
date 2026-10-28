@@ -42,7 +42,11 @@ kernel + initrd.tar + grub.cfg ──(mkiso.sh: grub-mkrescue)──► build/ou
   理论上用户态中断切内核栈后可用 red-zone）；
 - **C 程序**是 `addSystemCommand` 调 `zig cc`——注意
   **必须 addFileInput**，否则构建系统不跟踪 .c 源码变化，
-  出现"改了代码跑的还是旧二进制"的灵异现象（README 踩坑 9）。
+  出现"改了代码跑的还是旧二进制"的灵异现象（README 踩坑 9）；
+- 自研 C 工具链 **occ**（OusiaC 项目，`../ccompiler`，原名 zcc）同样能编译
+  这些 C 程序：`occ userland/wc.c -o zig-out/bin/user/wco`——
+  自带汇编器 oas + 链接器 old，不依赖 zig cc；
+  `../ccompiler/scripts/e2e.sh` 用它编译并做与 zig cc 版的逐字节对比。
 
 ### 2.1 增删一个用户程序
 
