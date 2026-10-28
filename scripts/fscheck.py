@@ -132,14 +132,14 @@ def main():
     httpd, blob = start_fixture()
     try:
         cmds = [
-            "echo persist-me > /mnt/p.txt",
-            "echo line-two >> /mnt/p.txt",
-            "curl http://10.0.2.2:8123/big.bin > /mnt/big.bin",
-            "mkdir /mnt/sub",
-            "echo nested > /mnt/sub/n.txt",
-            "chmod 600 /mnt/p.txt",
-            "rm /mnt/sub/n.txt",
-            "rm -d /mnt/sub",
+            "echo persist-me > /p.txt",
+            "echo line-two >> /p.txt",
+            "curl http://10.0.2.2:8123/big.bin > /big.bin",
+            "mkdir /sub",
+            "echo nested > /sub/n.txt",
+            "chmod 600 /p.txt",
+            "rm /sub/n.txt",
+            "rm -d /sub",
             "df",
         ]
         if not run(cmds, disk):

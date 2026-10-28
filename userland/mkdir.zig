@@ -1,4 +1,4 @@
-//! mkdir —— 创建目录（/mnt 下 = ext2 落盘；其余 = tarfs RAM）
+//! mkdir —— 创建目录（根文件系统 ext2，直接落盘）
 
 const zos = @import("lib/zos.zig");
 

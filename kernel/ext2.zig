@@ -625,6 +625,7 @@ fn dirRemove(dir: u32, name: []const u8) bool {
 // ---------------- 文件读写 ----------------
 
 /// 读文件（不跨界、不分配）。返回实际读到的字节数。
+/// 稀疏文件的洞（逻辑块未映射）按 ext2 语义读作零。
 pub fn readFile(ino: u32, off: u64, buf: []u8) usize {
     const in = readInode(ino) orelse return 0;
     if (off >= in.size) return 0;
@@ -637,9 +638,12 @@ pub fn readFile(ino: u32, off: u64, buf: []u8) usize {
         const bi: u32 = @intCast(pos / block_size);
         const inoff: usize = @intCast(pos % block_size);
         const chunk = @min(block_size - inoff, n - done);
-        const mr = mapFileBlock(&ib, bi, false, &nalloc) orelse break;
-        const bp = blockPtr(mr.blk) orelse break;
-        @memcpy(buf[done..done + chunk], bp[inoff..inoff + chunk]);
+        if (mapFileBlock(&ib, bi, false, &nalloc)) |mr| {
+            const bp = blockPtr(mr.blk) orelse break;
+            @memcpy(buf[done..done + chunk], bp[inoff..inoff + chunk]);
+        } else {
+            @memset(buf[done..done + chunk], 0); // 洞
+        }
         done += chunk;
         pos += chunk;
     }

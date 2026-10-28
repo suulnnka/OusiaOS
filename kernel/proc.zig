@@ -568,10 +568,26 @@ fn std_strlen(buf: []const u8) usize {
 pub const ExecError = error{ NoEnt, Access, BadExe, NoMem };
 
 /// ext2 ELF 的暂存缓冲：块设备文件没有 tarfs 那样的现成内存切片可
-/// 借用，exec 时整文件读进来。教学简化：同一时刻只有一次 exec 在跑
-/// （execve 全程不让出 CPU）；256KB 覆盖本系统全部用户程序。
+/// 借用，exec 时整文件读进来。0.3 起 /bin 全在盘上，ReleaseSafe 用户
+/// 程序 2-4MB（.data 段占大头），缓冲给 8MB。教学简化：同一时刻只有
+/// 一次 exec 在跑（execve 全程不让出 CPU）。
 /// 注意：内核栈只有 16KB，大缓冲绝不能放栈上。
-var exec_disk_buf: [256 * 1024]u8 = undefined;
+var exec_disk_buf: [8 * 1024 * 1024]u8 = undefined;
+
+/// exec 的 ELF 数据来源：tarfs 直接指进 initrd 内存（零拷贝，兜底
+/// 模式）；ext2 走块设备整文件读入暂存缓冲（根文件系统模式）。
+/// 超出缓冲/读取失败返回 null（调用方报 BadExe）。
+fn readExecImage(node: usize) ?[]const u8 {
+    if (vfs.isExt2(node)) {
+        const inf = vfs.info(node);
+        if (inf.size > exec_disk_buf.len) return null; // 先查大小，绝不截断
+        const n = vfs.read(node, 0, &exec_disk_buf);
+        if (n <= 0) return null;
+        return exec_disk_buf[0..@intCast(n)];
+    }
+    const file_node = tarfs.getNode(node - 2);
+    return file_node.data;
+}
 
 /// execve：用 path 的 ELF 镜像替换当前进程地址空间。
 /// argv 为参数列表。成功后不再返回（从新程序入口进入用户态）；
@@ -588,17 +604,8 @@ pub fn execve(path: []const u8, argv: []const []const u8) ExecError!void {
     // exec 权限：x 位（root 旁路）
     if (!vfs.mayAccess(inf, p.uid, p.gid, .x)) return error.Access;
 
-    // ELF 数据来源：tarfs 直接指进 initrd 内存（零拷贝）；ext2 走
-    // 块设备读入暂存缓冲——两个文件系统经 vfs 统一，此处只是取数差异
-    const data: []const u8 = blk: {
-        if (vfs.isExt2(node)) {
-            const n = vfs.read(node, 0, &exec_disk_buf);
-            if (n <= 0) return error.BadExe;
-            break :blk exec_disk_buf[0..@intCast(n)];
-        }
-        const file_node = tarfs.getNode(node - 2);
-        break :blk file_node.data orelse return error.BadExe;
-    };
+    // 两个文件系统经 vfs 统一，此处只是取数差异
+    const data = readExecImage(node) orelse return error.BadExe;
 
     // 1. 新地址空间 + 加载 ELF（后续任何失败都要销毁它——旧空间
     //    在失败路径上必须保持可用，泄漏检查是 execve 的经典练习）
@@ -860,8 +867,7 @@ fn execIntoFresh(p: *Proc, path: []const u8) bool {
     const node = vfs.resolve(path, "/") orelse return false;
     const inf = vfs.info(node);
     if (inf.is_dir or inf.is_console) return false;
-    const file_node = tarfs.getNode(node - 2);
-    const data = file_node.data orelse return false;
+    const data = readExecImage(node) orelse return false;
 
     const img = elf.load(p.page_map, data) orelse return false;
 

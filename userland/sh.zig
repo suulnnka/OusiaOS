@@ -72,11 +72,11 @@ export fn main() i32 {
                 \\          ifconfig  ping <ip> [n]  curl http://host[:port]/path
                 \\          beep [hz] [ms]  music  play <file.wav>
                 \\files:    mkdir <dir>  rm [-d] <path>  df
-                \\          echo text > file  echo more >> file  (ext2 磁盘 /mnt)
+                \\          echo text > file  echo more >> file  (落盘 ext2)
                 \\perms:    id  whoami  su <user>  chmod <octal> <file>
                 \\          chown <user> <file>
                 \\builtins: cd <dir>  pwd  help  exit
-                \\note: 10.0.2.2 = 宿主机（QEMU user 网络）；/mnt = ext2 磁盘
+                \\note: 10.0.2.2 = 宿主机（QEMU user 网络）；根文件系统 = ext2 磁盘
                 \\
             , .{});
             continue;

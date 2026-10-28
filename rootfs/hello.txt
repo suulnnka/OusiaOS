@@ -1,1 +1,1 @@
-hello from tarfs (initrd)!
+hello from the ext2 root filesystem!

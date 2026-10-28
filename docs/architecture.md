@@ -20,7 +20,7 @@
 │ proc.zig      PCB/调度器/swtch/fork/execve/exit/wait4              │
 │ vmm.zig       四级页表、直接映射区、fork 克隆/execve 重建          │
 │ pmm.zig       位图页帧分配器（multiboot mmap 初始化）              │
-│ vfs+tarfs+elf 路径解析 / ustar 内存盘 / ELF64 加载器               │
+│ vfs+ext2+elf 路径解析 / ext2 根文件系统 / ELF64 加载器             │
 │ net.zig       以太网/ARP/IP/ICMP/DNS/TCP(停等)/HTTP                │
 │ e1000+pci     网卡驱动（描述符环 DMA）/ PCI 枚举与 MMIO            │
 │ idt/gdt/pic   中断框架 / 特权级与 TSS.rsp0 / 8259 重映射            │
@@ -91,7 +91,8 @@ sti                     ← 内核从此被中断驱动
 （忙等 2 秒）            验证时钟中断在跑；顺便等 QEMU e1000 的
                         RCTL flush 定时器过期（README 踩坑 13）
 net 自检                ping 10.0.2.2 打印 RTT
-tarfs.init + vfs.init   解析 initrd tar；列根目录、读 /etc/motd
+ata.init + ext2.mount   探测 ATA 磁盘；ext2 整体挂为根文件系统
+vfs.init + ls / 读 motd 根目录=磁盘根（/bin /etc 在盘上）
 proc.init               进程表清零；挂 tick_hook / dispatch_hook
 proc.spawnInit          创建 PID 1（/bin/sh，fd 0/1/2=console）
 proc.scheduler()        进入调度循环，永不返回
@@ -252,7 +253,7 @@ caller-saved 寄存器按 ABI 本来就不跨调用存活。"栈就是进程的�
 | 抢占方式 | 时钟中断 + 时间片轮转（20ms） | 最小可讲解的调度器 |
 | fork 语义 | 深拷贝 | 先懂"地址空间是数据结构"，再谈 COW |
 | 系统调用机制 | int 0x80 | 复用中断框架；SYSCALL/SYSRET 是练习 7 |
-| 文件系统 | ustar 内存盘（运行期可写：写时拷贝到自分配页）+ ext2 挂载 | "文件系统=对一块内存的解释"；练习 5 已完成——写入时才把数据搬进自己的页 |
+| 文件系统 | ext2 根文件系统（位图分配/间接块/目录项，读写落盘）+ tarfs 兜底 | 0.2 的 ustar 内存盘（练习 5 改造成可写）退位为无盘兜底；0.3 起真磁盘 ext2 为根 |
 | 网络收包 | 100Hz 时钟轮询 | 避开 QEMU UART/e1000 中断投递竞态；改中断是练习 |
 | 并发 | 单核、网络大锁、无自旋锁 | SMP 是练习 8（毕业设计级） |
 | libc | 自带（Zig+C 混写） | 让标准 C 程序零修改移植（wc/curl 是活例子） |

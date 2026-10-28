@@ -123,12 +123,12 @@ if __name__ == "__main__":
     cmds = sys.argv[1:] or [
         "uname -a", "ls /", "cat /etc/motd", "echo ok", "ps", "forkdemo",
         "fputest", "hello", "cdemo", "wc /etc/motd",
-        # ext2 磁盘（/mnt）：读、建、写、改权限、删——落盘证据可事后用
+        # ext2 根文件系统：读、建、写、改权限、删——落盘证据可事后用
         # debugfs/e2fsck 检查镜像（这里用临时副本，不动 build/disk.img）
-        "ls /mnt", "cat /mnt/hello.txt", "cat /mnt/README",
-        "mkdir /mnt/demo", "echo hello-ext2 > /mnt/demo/a.txt",
-        "cat /mnt/demo/a.txt", "ls /mnt/demo", "chmod 600 /mnt/demo/a.txt",
-        "rm /mnt/demo/a.txt", "rm -d /mnt/demo", "ls /mnt", "df",
+        "ls /bin", "cat /hello.txt", "cat /README",
+        "mkdir /demo", "echo hello-ext2 > /demo/a.txt",
+        "cat /demo/a.txt", "ls /demo", "chmod 600 /demo/a.txt",
+        "rm /demo/a.txt", "rm -d /demo", "df",
         "ifconfig", "ping 10.0.2.2 3", "curl http://10.0.2.2:8099/hello.txt",
         "glcube",
     ]

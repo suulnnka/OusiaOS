@@ -496,7 +496,7 @@ fn sysUname(buf: usize) isize {
     @memset(b, 0);
     copyStr(b[0..65], "ZOS"); // sysname
     copyStr(b[65..130], "zos"); // nodename
-    copyStr(b[130..195], "0.2.0"); // release
+    copyStr(b[130..195], "0.3.0"); // release
     copyStr(b[195..260], "ZOS #1 teaching kernel (zig)"); // version
     copyStr(b[260..325], "x86_64"); // machine
     return 0;

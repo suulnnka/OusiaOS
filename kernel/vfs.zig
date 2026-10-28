@@ -1,20 +1,19 @@
 //! VFS —— 虚拟文件系统：路径解析 + 挂载表 + 设备抽象
 //!
 //! 教学要点：
-//!   - Unix 的伟大发明："一切皆文件"。read(/dev/console) 与 read(/mnt/a.txt)
+//!   - Unix 的伟大发明："一切皆文件"。read(/dev/console) 与 read(/bin/sh)
 //!     走同一个接口，背后一个是字符设备、一个真磁盘上的 ext2
 //!   - 路径解析 namei：相对路径基于进程 cwd，逐段消解 "." 与 ".."
-//!   - 挂载（mount）：把一个文件系统的根"嫁接"到路径树的某个节点上。
-//!     解析时按前缀匹配挂载点，落入对应文件系统继续查——/mnt 之下的
-//!     名字完全由 ext2 解释，父目录树对它一无所知
-//!   - 两个后端的对比：tarfs 是 RAM 里的练习版（重启即失），ext2 是
-//!     真磁盘上的工业格式（mke2fs 可做盘、e2fsck 可查、掉电不丢）
+//!   - 挂载（mount）：把文件系统的根"嫁接"到名字树上。ZOS 0.3 起
+//!     ext2 整体作为根文件系统（mountExt2("/")）：/bin /etc 全在盘上；
+//!     无盘时回退 initrd tarfs（保留作教学对照）
+//!   - ext2 是工业格式：mke2fs 可做盘、debugfs/e2fsck 可检查、掉电不丢
 //!
 //! 节点编号（vfs 层的统一句柄）：
-//!   0            /        （虚拟根目录）
+//!   0            /        （虚拟根目录；ext2 根挂载时信息/列表透传给 ext2）
 //!   1            /dev/console（字符设备，内核特判）
-//!   2..2+N-1     tarfs 节点（tarfs 内部下标 = vfs 编号 - 2）
-//!   1024+ino     ext2 节点（挂载于 /mnt；ino = ext2 inode 号）
+//!   2..2+N-1     tarfs 节点（仅无盘兜底模式）
+//!   1024+ino     ext2 节点（ino = ext2 inode 号）
 
 const std = @import("std");
 const tarfs = @import("tarfs.zig");
@@ -31,14 +30,23 @@ pub fn init() void {
     // tarfs.init() 已在 main 里填充节点表；本模块无需额外初始化
 }
 
-// ---------------- 挂载表（教学简化：单一 ext2 挂载，单段路径） ----------------
+// ---------------- 挂载表（教学简化：单一 ext2） ----------------
 
 var mp_buf: [64]u8 = undefined;
-var mp_len: usize = 0;
+var mp_len: usize = 0; // 0 = 根挂载（mountExt2("/")）或未挂载，看 root_mounted
+var root_mounted = false;
 
-/// 挂载 ext2 到 mp（如 "/mnt"）。要求 ext2.mount() 已成功。
+/// 挂载 ext2。mp="/"：整体作为根文件系统（0.3 起的形态）；
+/// mp="/mnt"：嫁接到名字树某节点（旧的双文件系统演示形态）。
+/// 要求 ext2.mount() 已成功。
 pub fn mountExt2(mp: []const u8) bool {
-    if (!ext2.mounted() or mp.len == 0 or mp.len + 1 > mp_buf.len) return false;
+    if (!ext2.mounted()) return false;
+    if (eqStr(mp, "/")) {
+        mp_len = 0;
+        root_mounted = true;
+        return true;
+    }
+    if (mp.len == 0 or mp.len + 1 > mp_buf.len) return false;
     // 规范化：去掉首尾 '/'；教学简化只支持单段挂载点（"mnt"）
     var s: usize = 0;
     var e: usize = mp.len;
@@ -50,13 +58,17 @@ pub fn mountExt2(mp: []const u8) bool {
     }
     @memcpy(mp_buf[0 .. e - s], mp[s..e]);
     mp_len = e - s;
+    root_mounted = false;
     return true;
 }
 
 /// 规范化绝对路径与挂载点做前缀匹配。
 /// 命中返回挂载点之下的相对路径（"" 表示挂载点本身），未命中 null。
+/// 根挂载时任何路径都命中（整个名字树都归 ext2）。
 fn mountMatch(norm: []const u8) ?[]const u8 {
-    if (mp_len == 0 or norm.len < 1 or norm[0] != '/') return null;
+    if (norm.len < 1 or norm[0] != '/') return null;
+    if (root_mounted) return norm[1..];
+    if (mp_len == 0) return null;
     const mp = mp_buf[0..mp_len];
     const rest = norm[1..];
     if (rest.len == mp.len and eqStr(rest, mp)) return "";
@@ -66,7 +78,12 @@ fn mountMatch(norm: []const u8) ?[]const u8 {
 }
 
 pub fn ext2Mounted() bool {
-    return ext2.mounted() and mp_len > 0;
+    return ext2.mounted() and (root_mounted or mp_len > 0);
+}
+
+/// ext2 是否为根文件系统
+pub fn ext2IsRoot() bool {
+    return root_mounted and ext2.mounted();
 }
 
 /// 节点是否属于 ext2
@@ -220,6 +237,19 @@ pub fn resolve(path: []const u8, cwd: []const u8) ?usize {
 
 pub fn info(node: usize) NodeInfo {
     if (node == ROOT_NODE) {
+        // ext2 根挂载：根目录就是 ext2 的根（mode/uid 来自盘上 inode）
+        if (ext2IsRoot()) {
+            if (ext2.statIno(ext2.rootIno())) |st| {
+                return .{
+                    .is_dir = true,
+                    .is_console = false,
+                    .size = st.size,
+                    .mode = st.mode,
+                    .uid = st.uid,
+                    .gid = st.gid,
+                };
+            }
+        }
         return .{ .is_dir = true, .is_console = false, .size = 0, .mode = 0o040755, .uid = 0, .gid = 0 };
     }
     if (node == CONSOLE_NODE) {
@@ -505,6 +535,12 @@ pub fn ext2Info(out: []u8) ?[]const u8 {
 /// tarfs 里不需要真的有个 mnt 目录）
 pub fn listDir(node: usize, ctx: anytype, cb: fn (@TypeOf(ctx), name: []const u8, child_node: usize) void) void {
     if (node == ROOT_NODE) {
+        // ext2 根挂载：根目录列表 = ext2 根的直接孩子
+        if (ext2IsRoot()) {
+            ext2.listIno(ext2.rootIno(), EXT2_BASE, ctx, cb);
+            return;
+        }
+        // 嫁接挂载形态：先报挂载点名（挂载点在名字树上"虚拟存在"）
         if (ext2Mounted()) cb(ctx, mp_buf[0..mp_len], EXT2_BASE + ext2.rootIno());
         var it0 = tarfs.childIter("");
         while (it0.nextChild()) |c| {

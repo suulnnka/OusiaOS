@@ -23,7 +23,7 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 |---|---|---|---|
 | 0 | read | (fd, buf, count) | console 行缓冲读 / tarfs 文件读；上限 64KB 每次 |
 | 1 | write | (fd, buf, count) | console / tarfs(RAM) / ext2(磁盘) 可写；从 fd 位置续写 |
-| 2 | open | (path, flags) | O_RDONLY/O_WRONLY/O_RDWR + O_CREAT/O_EXCL/O_TRUNC；/mnt 下落盘 ext2 |
+| 2 | open | (path, flags) | O_RDONLY/O_WRONLY/O_RDWR + O_CREAT/O_EXCL/O_TRUNC；根文件系统为 ext2（落盘） |
 | 3 | close | (fd) | 释放 fd 槽位 |
 | 5 | fstat | (fd, buf) | 填 x86_64 struct stat 关键字段 |
 | 9 | mmap | (addr 忽略, len, prot 忽略) | 匿名 RW 用户页，游标分配 |
@@ -62,7 +62,7 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | 502 | zos_http_get | (host, port, path, out*, out_len) | 阻塞式 DNS+TCP+HTTP GET |
 | 503 | zos_net_info | (buf, len) | 网络配置串（ifconfig 用） |
 | 505 | zos_beep | (freq, ms) | AC'97 正弦单音，阻塞播完（audio 用） |
-| 508 | zos_fsinfo | (buf, len) | ext2 概要串（df 用）；未挂载 → ENOSYS |
+| 508 | zos_fsinfo | (buf, len) | ext2 概要串（df 用）；无磁盘 → ENOSYS |
 
 ## 2. 分组说明
 

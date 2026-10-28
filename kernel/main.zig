@@ -38,7 +38,7 @@ export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
     const gui_mode = multiboot.sniffFramebuffer(mbi_virt);
     console.init(gui_mode);
 
-    console.kprintf("\nZOS 0.2.0 -- a tiny teaching kernel in Zig\n", .{});
+    console.kprintf("\nZOS 0.3.0 -- a tiny teaching kernel in Zig\n", .{});
     console.kprintf("boot: 64-bit long mode OK\n", .{});
 
     if (magic != multiboot.MB2_BOOTLOADER_MAGIC) {
@@ -107,11 +107,21 @@ export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
         console.kprintf("boot: net selftest ping 10.0.2.2 -> {d} ms\n", .{@import("net.zig").ping(0x0A00_0202, 1)});
     }
 
-    // ---- 文件系统 ----
-    if (tarfs.init()) {
-        vfs.init();
-        console.kprintf("boot: vfs ready\n", .{});
-
+    // ---- 文件系统：ext2 真磁盘整体作为根（0.3 起的形态）----
+    // /bin、/etc 全在盘上（mkdisk.sh 制作 build/disk.img），写入持久。
+    // 无盘时回退 initrd tarfs（grub.cfg 已不再带 module2，此路保留作
+    // 教学对照）；两者皆无则没有 shell，提示后停机。
+    var fs_ok = false;
+    if (@import("ata.zig").init() and @import("ext2.zig").mount() and vfs.mountExt2("/")) {
+        fs_ok = true;
+        console.kprintf("boot: root filesystem = ext2 on ATA disk\n", .{});
+    } else if (tarfs.init()) {
+        fs_ok = true;
+        console.kprintf("boot: no ext2 disk -- fallback to initrd tarfs\n", .{});
+    }
+    vfs.init();
+    console.kprintf("boot: vfs ready\n", .{});
+    if (fs_ok) {
         // 列根目录
         console.kprintf("boot: ls /\n", .{});
         vfs.listDir(vfs.ROOT_NODE, {}, struct {
@@ -134,32 +144,6 @@ export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
         }
     } else {
         console.kprintf("boot: continue without filesystem\n", .{});
-    }
-
-    // ---- 真磁盘：ATA PIO + ext2 挂载到 /mnt（失败不致命，无盘可继续）----
-    // tarfs（initrd，RAM）之上挂 ext2（磁盘，可读写）——经典的
-    // "内存根文件系统 + 挂载真磁盘"两段式
-    if (@import("ata.zig").init() and @import("ext2.zig").mount() and vfs.mountExt2("/mnt")) {
-        console.kprintf("boot: ext2 mounted at /mnt\n", .{});
-        console.kprintf("boot: ls /mnt\n", .{});
-        if (vfs.resolve("/mnt", "/")) |mnt| {
-            vfs.listDir(mnt, {}, struct {
-                fn cb(_: void, name: []const u8, _: usize) void {
-                    console.kprintf("  {s}\n", .{name});
-                }
-            }.cb);
-        }
-        if (vfs.resolve("/mnt/hello.txt", "/")) |node| {
-            var buf: [128]u8 = undefined;
-            const n = vfs.read(node, 0, &buf);
-            if (n > 0) {
-                console.kprintf("boot: cat /mnt/hello.txt:\n", .{});
-                for (buf[0..@intCast(n)]) |c| console.putChar(c);
-                console.kprintf("\n", .{});
-            }
-        }
-    } else {
-        console.kprintf("boot: no ext2 disk (run scripts/mkdisk.sh, QEMU needs -drive)\n", .{});
     }
 
     // GUI 的"晚初始化"：读 /etc/zos.conf 壁纸/屏保设置 + 开机音

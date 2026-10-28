@@ -1,18 +1,20 @@
-# 文件系统：ATA 块设备 + ext2（读/写）+ VFS 挂载
+# 文件系统：ATA 块设备 + ext2 根文件系统（读/写）
 
-本文讲 ZOS 怎么从"一块真磁盘"到"ls /mnt 能列目录、写进去的文件
-重启还在"。三层自底向上：
+本文讲 ZOS 怎么从"一块真磁盘"到"/bin、/etc 全在盘上，写进去的
+文件重启还在"。三层自底向上：
 
 ```
-vfs.zig     名字空间：路径解析 + 挂载表 + 权限     （/mnt → ext2）
+vfs.zig     名字空间：路径解析 + 挂载表 + 权限     （ext2 = 根）
 ext2.zig    磁盘格式：超级块/位图/inode/目录项     （读 + 写）
 ata.zig     块设备：512B 扇区读写（PIO 轮询）      （主通道主盘）
 ```
 
-与 tarfs 的关系：tarfs（initrd，RAM）是"文件系统 = 对一块内存的解释"
-的练习版（写时拷贝到自分配页，重启即失）；ext2 是**工业格式**——
-镜像文件可以用宿主机的 `mke2fs`/`debugfs`/`e2fsck` 互相操作，
-数据真正落盘、掉电不丢。
+0.3 起 ext2 **整体作为根文件系统**（`vfs.mountExt2("/")`）：
+`/bin`（用户程序，execve 直接从 ext2 inode 加载）、`/etc`（系统
+配置）全在盘上，initrd/tarfs 不再参与引导（grub.cfg 已无 module2；
+tarfs 代码保留作教学对照与无盘兜底）。ext2 是**工业格式**——镜像
+文件可以用宿主机的 `mke2fs`/`debugfs`/`e2fsck` 互相操作，数据真正
+落盘、掉电不丢。
 
 ## 1. ata.zig —— 块设备层
 
@@ -46,7 +48,7 @@ cli/sti 临界区——磁盘 I/O 是"读-改-写"序列，中途被时钟中断
 
 ## 2. ext2 磁盘布局
 
-`mke2fs -b 1024` 的经典布局（build/disk.img，16MB = 2 个块组）：
+`mke2fs -b 1024` 的经典布局（build/disk.img，96MB = 12 个块组）：
 
 ```
 块 0        引导区（未用）
@@ -137,11 +139,11 @@ mkdir 时对偶地加一）。
 
 ## 6. 一次写操作的全链路
 
-`echo hi > /mnt/a.txt`（shell 重定向 → 子进程 open+dup2 → exec echo
+`echo hi > /a.txt`（shell 重定向 → 子进程 open+dup2 → exec echo
 → write(1)）：
 
 ```
-sysOpen("/mnt/a.txt", O_WRONLY|O_CREAT|O_TRUNC)
+sysOpen("/a.txt", O_WRONLY|O_CREAT|O_TRUNC)
   └─ vfs.resolveCred        挂载点前缀匹配 → ext2.lookupPath 失败
        └─ vfs.createFile    挂载点之下 → ext2 分支：
             ialloc()         inode 位图找 0 位 → 清零 inode
@@ -171,60 +173,56 @@ ata.writeSectors(...)  PIO outsw 落盘 → flush()
 代价是时钟中断最多被推迟一次大文件写的时长（QEMU 下毫秒级），
 教学上换来"不需要锁"的心智模型。
 
-## 8. VFS 挂载表
+## 8. VFS：根挂载与节点编号
 
-vfs 节点编号新增一段：
+vfs 节点编号：
 
 | 节点 | 含义 |
 |---|---|
-| 0 / 1 | `/`（虚拟根）/ `/dev/console` |
-| 2..N+1 | tarfs 节点（RAM，运行期可写） |
-| 1024+ino | ext2 节点（挂载于 /mnt，真磁盘） |
+| 0 / 1 | `/`（虚拟根；ext2 根挂载时信息/列表透传 ext2）/ `/dev/console` |
+| 2..N+1 | tarfs 节点（仅无盘兜底模式） |
+| 1024+ino | ext2 节点（ino = ext2 inode 号） |
 
-挂载点 `/mnt` 在名字树上**虚拟存在**——tarfs 里不需要真的有个
-mnt 目录，根目录列表会自动补上挂载点名（`vfs.listDir`）。
-解析规则：规范化路径与挂载点做**前缀匹配**（`mountMatch`），
-`/mnt` 与 `/mnt/**` 落入 ext2，其余走 tarfs。两个后端对比：
+`mountExt2("/")` 进入**根挂载**模式：`mountMatch` 对任何路径都
+命中（整个名字树归 ext2），`resolve("/bin/sh")` → `ext2.lookupPath
+("bin/sh")`。根目录节点仍是 ROOT_NODE(0)，`info/listDir` 透传给
+ext2 的根 inode。无盘时回退 tarfs（老的双文件系统形态
+`mountExt2("/mnt")` 也保留：前缀匹配挂载点，嫁接到名字树）。
 
-| | tarfs | ext2 |
-|---|---|---|
-| 介质 | initrd 内存 | ATA 磁盘（build/disk.img） |
-| 介质语义 | 写时拷贝到自分配页 | 位图分配 + 磁盘块 |
-| 持久性 | 重启即失 | 镜像文件持久保留 |
-| 宿主机工具 | tar 直接可看 | mke2fs/debugfs/e2fsck |
-
-mkdir/unlink/rmdir/chmod/chown 在 vfs 层按挂载前缀分发到对应后端
-（ext2 版真正落盘），错误语义两边对齐（如 unlink 目录都报 NotDir）。
-execve 也能从 ext2 读 ELF：≤256KB 的整文件读入暂存缓冲再走
-elf.load（`proc.zig` 的 `exec_disk_buf`）——tarfs 是零拷贝切片，
-ext2 是块设备读入，差异被 vfs.read 吸收。
+execve 从 ext2 读 ELF：整文件读入 8MB 暂存缓冲（`proc.zig` 的
+`exec_disk_buf`；ReleaseSafe 用户程序 2-4MB，超限先查大小直接
+拒绝）再走 elf.load——tarfs 是零拷贝切片，ext2 是块设备读入，
+差异被 vfs.read 吸收。稀疏文件（ELF 段间隙产生的洞）按 ext2
+语义读作零。
 
 ## 9. 制作与检查磁盘镜像
 
 ```bash
-zig build iso                      # mkiso.sh 会调 mkdisk.sh（已存在则保留内容）
-./scripts/mkdisk.sh --force        # 重建并清空（mke2fs + debugfs 填充 diskroot/）
+zig build iso                      # mkiso.sh 调 mkdisk.sh：96MB ext2 根
+                                   # （/bin 用户程序 + /etc + diskroot 注释；
+                                   #  已存在则跳过——改过程序后 --force 重建）
+./scripts/mkdisk.sh --force        # 重建并清空
 
 # 宿主机直接操作镜像（ext2 的好处：标准工具都能读）
 debugfs -R "ls -l /" build/disk.img
-debugfs -R "cat /hello.txt" build/disk.img
+debugfs -R "cat /etc/motd" build/disk.img
 e2fsck -fn build/disk.img          # 一致性体检（位图/计数/目录项链）
 
 # 自动化：QEMU 里写 → 宿主机 e2fsck + debugfs 逐字节核对
 python3 scripts/fscheck.py
 ```
 
-测试脚本：`scripts/test.py`（shell 全回归，含 /mnt 读写删）；
+测试脚本：`scripts/test.py`（shell 全回归，含根目录读写删）；
 `scripts/fscheck.py`（写后落盘校验：重定向+追加、20KB 跨间接块
 下载逐字节比对、chmod 落盘、目录建删、e2fsck 全绿）。
-持久性演示：`echo hi > /mnt/hi.txt` → Ctrl-A X 退出 → 重新
-`zig build run` → `cat /mnt/hi.txt` 还在。
+持久性演示：`echo hi > /hi.txt` → Ctrl-A X 退出 → 重新
+`zig build run` → `cat /hi.txt` 还在。
 
 ## 10. 已知取舍（= 练习清单）
 
 - 无日志：崩溃一致性只保证"单操作内同步写"；加一层日志（journal）
   是经典练习（ext3 就是这么来的）；
-- 单挂载点、单段路径（`/mnt`）：多文件系统挂载表是一小步重构；
+- 单文件系统实例：多盘/多挂载点挂载表是一小步重构；
 - 目录无哈希索引（dir_index 特性被忽略，线性扫描）、无 inode 缓存；
 - 不设 atime/mtime（dtime 有墙钟，`nowSecs()` 可以直接复用）；
 - 稀疏文件：写到哪里分配到哪里，但不产生"洞"（读未写区域会先分配清零）；

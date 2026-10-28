@@ -11,10 +11,11 @@ ZOS 是一个为**操作系统课程教学**设计的迷你内核：从 GRUB 引
 > [用户态与移植](docs/userland.md) · [miniGL 3D 图形](docs/gl.md) · [构建与调试](docs/build-and-debug.md)
 
 ```
-ZOS 0.2.0 -- a tiny teaching kernel in Zig
+ZOS 0.3.0 -- a tiny teaching kernel in Zig
 boot: 64-bit long mode OK
 ...
-tarfs: initrd [2b8000,8e4000) 6320KB, 17 entries
+ext2: 98304 blocks x 1024B, 12 group(s), 24576 inodes (128B each), rev 1, filetype
+boot: root filesystem = ext2 on ATA disk
 boot: init process spawned, entering scheduler
 
 ZOS shell (pid=1) -- type 'help' for commands
@@ -60,6 +61,9 @@ python3 scripts/test.py uname -a ls / cat /etc/motd ps forkdemo
 python3 scripts/fscheck.py   # ext2 落盘校验：QEMU 写入 → 宿主 e2fsck/debugfs 核对
 ```
 
+改过用户程序后记得 `./scripts/mkdisk.sh --force` 重建盘上的 /bin
+（mkdisk.sh 默认保留盘内容，跨重启的用户文件因此不丢）。
+
 音频子系统（AC'97 + DDS 合成，QEMU 需 `-device AC97`）：
 
 ```bash
@@ -70,22 +74,24 @@ python3 scripts/audiotest.py   # wav 录音验证频率/时长（详见 docs/aud
 内核控制台同时输出到 VGA 文本屏（0xB8000）与 COM1 串口；
 `qemu -serial stdio` 时串口就是完整终端（输出 + 输入 + 回显）。
 
-### ext2 磁盘文件系统（/mnt，读 + 写）
+### ext2 根文件系统（0.3 起：整个系统都在一块真磁盘上）
 
-真磁盘上的 ext2：ATA PIO 驱动（`kernel/ata.zig`）+ 完整 ext2 实现
-（`kernel/ext2.zig`：超级块/组描述符/位图分配/一至三重间接块/目录项），
-VFS 挂载到 `/mnt`（`kernel/vfs.zig` 挂载表）。shell 里：
+ATA PIO 驱动（`kernel/ata.zig`）+ 完整 ext2 实现（`kernel/ext2.zig`：
+超级块/组描述符/位图分配/一至三重间接块/目录项算法），VFS 把它
+整体挂为根（`kernel/vfs.zig` 挂载表）——`/bin`（用户程序，execve
+直接从 ext2 inode 加载 ELF）、`/etc` 全在盘上，initrd/tarfs 不再
+参与引导。shell 里：
 
 ```bash
-ls /mnt                       # 列磁盘（mkdisk.sh 预置 hello.txt/README/notes/）
-echo hi > /mnt/hi.txt         # 重定向写（O_CREAT+O_TRUNC 落盘）
-cat /mnt/hi.txt
-mkdir /mnt/d && rm -d /mnt/d  # 目录建删
-chmod 600 /mnt/hi.txt         # 权限位真正写进 inode
+ls /                          # 根 = ext2 磁盘根（mkdisk.sh 预置 /bin /etc …）
+echo hi > /hi.txt             # 重定向写（O_CREAT+O_TRUNC 落盘）
+cat /hi.txt
+mkdir /d && rm -d /d          # 目录建删
+chmod 600 /hi.txt             # 权限位真正写进 inode
 df                            # 超级块空闲计数
 ```
 
-写进 /mnt 的文件**跨重启保留**（对比 tarfs：RAM 里，重启即失），
+写进去的文件**跨重启保留**（对比旧 tarfs：RAM 里，重启即失），
 宿主机可以用 `debugfs -R "ls -l /" build/disk.img` 直接查看、
 `e2fsck -fn` 体检。详见 [docs/fs.md](docs/fs.md)。
 
@@ -160,10 +166,10 @@ python3 scripts/glishot.py # 无头视觉回归：GL 窗口两帧差异 + 场景
 | `kernel/tty.zig` | 行规程 | 环形缓冲、回显、退格、行缓冲 |
 | `kernel/pmm.zig` | 物理内存 | 位图页帧分配器、内存映射初始化 |
 | `kernel/vmm.zig` | 虚拟内存 | 四级页表、直接映射区、mapPage、fork 克隆/销毁 |
-| `kernel/tarfs.zig` | 文件系统 | ustar 内存盘解析、目录列举（运行期可写） |
+| `kernel/tarfs.zig` | 文件系统 | ustar 内存盘解析、目录列举（无盘兜底；0.2 为根） |
 | `kernel/ata.zig` | **块设备** | ATA PIO 驱动：IDENTIFY、LBA28 扇区读写、轮询握手 |
 | `kernel/ext2.zig` | **ext2（读+写）** | 超级块/组描述符、位图分配、间接块映射、目录项算法 |
-| `kernel/vfs.zig` | VFS | 路径规范化（./..解析）、/dev/console 字符设备、挂载表（/mnt→ext2） |
+| `kernel/vfs.zig` | VFS | 路径规范化（./..解析）、/dev/console 字符设备、挂载表（ext2 为根） |
 | `kernel/elf.zig` | 加载器 | ELF64 PT_LOAD 段映射、bss 清零 |
 | `kernel/proc.zig` | 进程 | PCB、swtch 上下文切换、fork/exec/exit/wait4、轮转调度器 |
 | `kernel/pci.zig` | **PCI 枚举** | 配置空间访问、BAR 解码、MMIO 映射、总线主控使能 |

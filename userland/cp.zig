@@ -5,8 +5,8 @@
 //!   - Screen Saver：Off/15/30/60/120 秒单选（写 /etc/zos.conf）
 //!   - Sounds：音量 +/- 与 Test（AC'97 mixer 衰减寄存器；Test 播 ding）
 //!   - 保存 = open(/etc/zos.conf, O_CREAT|O_TRUNC|O_WRONLY) + write
-//!     ——内核 gui.lateInit 开机读回。落在 ramfs 重启即失；ext2 挂载
-//!     /mnt 后把配置挪过去就是"掉电不丢"的练习入口
+//!     ——内核 gui.lateInit 开机读回。0.3 起 / 在 ext2 磁盘上，
+//!     设置天然持久（掉电不丢）
 //!
 //! 布局：左列分区标题 + 右列控件；状态栏显示保存结果。
 
@@ -326,7 +326,7 @@ fn draw() void {
 
     // About 文本（多档字号演示：小字页脚）
     win.text(SEC_X, ROW_Y[3], "ZOS settings persist in " ++ CONF_FILE, win.C_SHADOW);
-    win.text(SEC_X, ROW_Y[3] + 14, "(ramfs: lost on reboot; copy to /mnt for permanent)", win.C_SHADOW);
+    win.text(SEC_X, ROW_Y[3] + 14, "(ext2 disk: survives reboot)", win.C_SHADOW);
 
     // 状态栏
     win.fillRect(2, CH - 18, CW - 4, 16, win.C_CHROME);

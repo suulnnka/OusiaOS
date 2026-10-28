@@ -1,15 +1,17 @@
-This file lives on the ext2 disk (build/disk.img), mounted at /mnt.
+This is the ZOS root filesystem: a real ext2 disk (build/disk.img).
 
-Unlike tarfs (the initrd RAM filesystem), everything under /mnt is
-stored in real on-disk ext2 structures: superblock, block/inode
-bitmaps, inode tables with indirect blocks, and directory entries.
+/bin  user programs (loaded by execve straight from these ext2 inodes)
+/etc  system config (motd, passwd, zos.conf -- edits persist!)
 
-Writes persist across reboots -- try:
+Unlike the old initrd/tarfs (a RAM filesystem), everything here lives
+in on-disk ext2 structures: superblock, block/inode bitmaps, inode
+tables with indirect blocks, and directory entries. Writes survive
+reboots -- try:
 
-    echo hi > /mnt/hi.txt
-    cat /mnt/hi.txt
-    reboot   (or Ctrl-A X and re-run zig build run)
-    cat /mnt/hi.txt     # still there!
+    echo hi > /hi.txt
+    cat /hi.txt
+    (Ctrl-A X, then `zig build run` again)
+    cat /hi.txt     # still there!
 
 The host can inspect this disk with e2fsprogs:
 

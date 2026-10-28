@@ -211,7 +211,7 @@ initrd 的间隙、MMIO 洞）时会"跨界硬拼"出不连续的序列，内核
 | 0 | `/`（虚拟根） |
 | 1 | `/dev/console`（字符设备，内核特判） |
 | 2..N+1 | tarfs 节点（tarfs 下标 = vfs 编号 − 2） |
-| 1024+ino | ext2 节点（挂载于 /mnt，ino = ext2 inode 号） |
+| 1024+ino | ext2 节点（根文件系统；ino = ext2 inode 号） |
 
 - `normalizePath`：合并 cwd、消解 `.`/`..`，输出规范路径
   （长度上限 256，超长返回 null）——chdir 与 resolve 共用；
@@ -232,8 +232,9 @@ initrd 的间隙、MMIO 洞）时会"跨界硬拼"出不连续的序列，内核
   ialloc 及一致性的四处回写）、一至三重间接块映射、目录项
   插入/删除（rec_len 合并）、读/写/截断；24 块直接映射缓存，
   写穿透 + "禁止跨 blockPtr 持有切片"纪律；
-- 挂载：`ata.init()` + `ext2.mount()` + `vfs.mountExt2("/mnt")`，
-  失败不致命（无盘继续用 tarfs）；
+- 挂载：`ata.init()` + `ext2.mount()` + `vfs.mountExt2("/")`——
+  ext2 整体作为根文件系统（/bin /etc 在盘上，execve 从盘加载
+  ELF）；无盘回退 tarfs（兜底）；
 - 布局图、写路径走读、e2fsck/debugfs 校验方法：**[fs.md](fs.md)**。
 
 ## 6. 进程与调度（proc.zig）
