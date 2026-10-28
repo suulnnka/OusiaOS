@@ -1,6 +1,6 @@
-/* ZOS libc —— <time.h> */
-#ifndef _ZOS_TIME_H
-#define _ZOS_TIME_H
+/* OusiaOS libc —— <time.h> */
+#ifndef _OusiaOS_TIME_H
+#define _OusiaOS_TIME_H
 
 typedef long time_t;
 typedef long clock_t;

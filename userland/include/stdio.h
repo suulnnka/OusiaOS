@@ -1,9 +1,9 @@
-/* ZOS libc —— <stdio.h>
+/* OusiaOS libc —— <stdio.h>
  * FILE 为薄封装（fd + eof/err 标志），无用户态缓冲。
  * printf 族由 clib.c 以 C va_list 实现。
  */
-#ifndef _ZOS_STDIO_H
-#define _ZOS_STDIO_H
+#ifndef _OusiaOS_STDIO_H
+#define _OusiaOS_STDIO_H
 
 #include <stddef.h>
 

@@ -1,4 +1,4 @@
-/* curl —— 极简 HTTP 客户端（移植演示：标准 C，经 ZOS 扩展系统调用）
+/* curl —— 极简 HTTP 客户端（移植演示：标准 C，经 OusiaOS 扩展系统调用）
  *
  * 用法: curl http://HOST[:PORT]/PATH
  *   HOST 可以是 IP 或域名（内核侧做 DNS）

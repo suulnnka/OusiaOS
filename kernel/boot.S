@@ -1,5 +1,5 @@
 /*
- * ZOS 引导阶段（boot.S）
+ * OusiaOS 引导阶段（boot.S）
  *
  * 运行环境：GRUB 按 Multiboot2 协议加载内核后，CPU 处于
  *   - 32 位保护模式（未开分页）

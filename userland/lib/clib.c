@@ -1,4 +1,4 @@
-/* clib.c —— ZOS libc 的 C 部分
+/* clib.c —— OusiaOS libc 的 C 部分
  *
  * printf 全家族（用真正的 C va_list 实现，教学重点：可变参数的原理）
  * 与 getopt（移植 Unix 命令行程序的基础设施）。

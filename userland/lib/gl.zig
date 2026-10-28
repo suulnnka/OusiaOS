@@ -330,7 +330,7 @@ pub fn makeCurrent(c: *Context) void {
 /// 绑定渲染目标：color/depth 数组长度必须 ≥ w*h。
 /// rsh/gsh/bsh 是目标像素格式的通道移位——miniGL 直接按硬件帧缓冲
 /// 格式打包像素，上屏路径零转换。内核侧传 gui 的移位，用户态从
-/// zwin_open 系统调用的返回值里拿。
+/// owin_open 系统调用的返回值里拿。
 pub fn beginFrame(color: []u32, depth: []f32, w: i32, h: i32, rsh: u5, gsh: u5, bsh: u5) void {
     const c = ctx();
     std.debug.assert(w > 0 and h > 0);

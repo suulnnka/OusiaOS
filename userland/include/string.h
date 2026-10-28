@@ -1,9 +1,9 @@
-/* ZOS libc —— <string.h>
+/* OusiaOS libc —— <string.h>
  * memcpy/memset/memmove 由编译器运行时(compiler_rt)提供，
  * 此处仅声明。
  */
-#ifndef _ZOS_STRING_H
-#define _ZOS_STRING_H
+#ifndef _OusiaOS_STRING_H
+#define _OusiaOS_STRING_H
 
 #include <stddef.h>
 

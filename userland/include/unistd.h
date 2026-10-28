@@ -1,6 +1,6 @@
-/* ZOS libc —— <unistd.h> */
-#ifndef _ZOS_UNISTD_H
-#define _ZOS_UNISTD_H
+/* OusiaOS libc —— <unistd.h> */
+#ifndef _OusiaOS_UNISTD_H
+#define _OusiaOS_UNISTD_H
 
 #include <stddef.h>
 

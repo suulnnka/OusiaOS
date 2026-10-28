@@ -1,6 +1,6 @@
-/* ZOS libc —— <errno.h> */
-#ifndef _ZOS_ERRNO_H
-#define _ZOS_ERRNO_H
+/* OusiaOS libc —— <errno.h> */
+#ifndef _OusiaOS_ERRNO_H
+#define _OusiaOS_ERRNO_H
 
 int *__errno_location(void);
 #define errno (*__errno_location())

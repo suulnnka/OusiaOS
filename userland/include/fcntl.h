@@ -1,6 +1,6 @@
-/* ZOS libc —— <fcntl.h> */
-#ifndef _ZOS_FCNTL_H
-#define _ZOS_FCNTL_H
+/* OusiaOS libc —— <fcntl.h> */
+#ifndef _OusiaOS_FCNTL_H
+#define _OusiaOS_FCNTL_H
 
 #define O_RDONLY 0
 #define O_WRONLY 1

@@ -1,6 +1,6 @@
-/* ZOS libc —— <ctype.h> */
-#ifndef _ZOS_CTYPE_H
-#define _ZOS_CTYPE_H
+/* OusiaOS libc —— <ctype.h> */
+#ifndef _OusiaOS_CTYPE_H
+#define _OusiaOS_CTYPE_H
 
 int isalpha(int c);
 int isdigit(int c);

@@ -1,8 +1,8 @@
-/* ZOS libc —— <dirent.h>
+/* OusiaOS libc —— <dirent.h>
  * d_reclen 内含变长名；DIR 内嵌缓冲，readdir 返回内部槽位。
  */
-#ifndef _ZOS_DIRENT_H
-#define _ZOS_DIRENT_H
+#ifndef _OusiaOS_DIRENT_H
+#define _OusiaOS_DIRENT_H
 
 #define DT_DIR 4
 #define DT_REG 8

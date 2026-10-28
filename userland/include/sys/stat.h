@@ -1,8 +1,8 @@
-/* ZOS libc —— <sys/stat.h>
+/* OusiaOS libc —— <sys/stat.h>
  * 字段布局与内核 fstat 写入严格对应（mode@24 size@48 ino@8）。
  */
-#ifndef _ZOS_SYS_STAT_H
-#define _ZOS_SYS_STAT_H
+#ifndef _OusiaOS_SYS_STAT_H
+#define _OusiaOS_SYS_STAT_H
 
 struct stat {
     unsigned long st_dev;   /* 0 */

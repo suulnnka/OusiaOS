@@ -1,4 +1,4 @@
-/* cdemo —— ZOS libc 移植演示（纯 C 编写）
+/* cdemo —— OusiaOS libc 移植演示（纯 C 编写）
  *
  * 这份源码 #include 的全是标准头文件，在 Linux 上用 gcc 也能编译
  * （除 /etc/motd 路径外无平台依赖）——展示"零修改移植"的含义。
@@ -55,9 +55,9 @@ int main(int argc, char **argv) {
     /* ---- 2. string.h + ctype ---- */
     char s[64];
     strcpy(s, "Hello,");
-    strcat(s, " ZOS");
+    strcat(s, " OusiaOS");
     printf("len=%zu cmp=%d upper=%s\n",
-           strlen(s), strcmp(s, "Hello, ZOS"), "OK");
+           strlen(s), strcmp(s, "Hello, OusiaOS"), "OK");
     char *dup = strdup(s);
     for (char *p = dup; *p; p++)
         *p = (char)toupper(*p);

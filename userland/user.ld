@@ -1,4 +1,4 @@
-/* ZOS 用户程序链接脚本：静态 ELF，加载基址 0x400000 */
+/* OusiaOS 用户程序链接脚本：静态 ELF，加载基址 0x400000 */
 ENTRY(_start)
 
 SECTIONS

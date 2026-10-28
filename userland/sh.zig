@@ -98,7 +98,7 @@ export fn main() i32 {
         }
         if (ousia.eql(cmd, "whoami")) {
             var nb: [16]u8 = undefined;
-            ousia.printf("{s}\n", .{cstrN(&nb, userByUid(ousia.getuid(), &nb))});
+            ousia.printf("{s}\n", .{userByUid(ousia.getuid(), &nb)});
             continue;
         }
         if (ousia.eql(cmd, "su")) {
@@ -335,13 +335,6 @@ fn parseOctal(s: []const u8) u32 {
         v = v * 8 + (c - '0');
     }
     return v;
-}
-
-/// 复制到临时缓冲再交给 printf 的 {s}（避免生命周期问题）
-fn cstrN(buf: *[16]u8, s: []const u8) []const u8 {
-    const n = @min(s.len, 15);
-    @memcpy(buf[0..n], s[0..n]);
-    return buf[0..n];
 }
 
 const LineIt = struct {

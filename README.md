@@ -161,7 +161,7 @@ winsys 的共享表面——纯用户态浮点代码，时钟中断随时打断�
 XMM 现场保存（TrapFrame + swtchImpl 两处）保证正确性。
 
 - **glview**（菜单 "3D Demos"，Zig）：三场景演示，TCG 下约 18fps
-- **glcube**（shell 运行，C）：`userland/include/zgl.h` 的 C ABI 证明
+- **glcube**（shell 运行，C）：`userland/include/ogl.h` 的 C ABI 证明
   同一份光栅化器跨语言可用
 - **fputest**（shell 运行）：FPU 上下文切换回归——父子进程并发 f64
   演算，位级比对
@@ -215,7 +215,7 @@ python3 scripts/glishot.py # 无头视觉回归：GL 窗口两帧差异 + 场景
 | `userland/wc.c` `cdemo.c` | **C 程序** | 真 Unix wc 移植 + libc 全家桶演示 |
 | `userland/beep.zig` `music.zig` | **音频命令** | AC'97 蜂鸣 / 欢乐颂旋律（ousia_beep 505） |
 | `userland/lib/gl.zig` | **miniGL 光栅化器** | OpenGL 1.x 子集：矩阵栈/深度/光照/透视校正纹理；宿主机可单测 |
-| `userland/lib/zglabi.zig` `include/zgl.h` | **GL 的 C ABI** | zgl_* 导出，C 程序（glcube.c）同一光栅化器 |
+| `userland/lib/oglabi.zig` `include/ogl.h` | **GL 的 C ABI** | ogl_* 导出，C 程序（glcube.c）同一光栅化器 |
 | `userland/glview.zig` | **3D 演示** | 纹理立方体/Gouraud 圆环/线框地形三场景（用户态 GUI 应用） |
 | `userland/fputest.zig` | **FPU 回归** | 并发 f64 位级校验——XMM 现场保存的正确性证明 |
 | `scripts/test.py` | 自动化测试 | PTY 驱动 QEMU 串口的集成测试 |

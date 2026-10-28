@@ -1,4 +1,4 @@
-/* ZOS libc —— <assert.h> */
+/* OusiaOS libc —— <assert.h> */
 #undef assert
 #ifdef NDEBUG
 #define assert(x) ((void)0)

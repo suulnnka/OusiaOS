@@ -112,8 +112,8 @@ LIGHTING/CULL_FACE/TEXTURE_2D）、`glDepthFunc/glDepthMask`、
 刻意不做（都写在文件头）：法线矩阵只用模型视线性部分的转置（非均匀
 缩放下不严格）、无 alpha 混合、无显示列表/VBO/shader、纹理只 nearest。
 
-**C ABI**：`userland/lib/zglabi.zig` 把同一份 gl.zig 导出成 `zgl_*`
-符号（`userland/include/zgl.h`），C 程序 `glcube.c` 链接 libousia.a 即
+**C ABI**：`userland/lib/oglabi.zig` 把同一份 gl.zig 导出成 `ogl_*`
+符号（`userland/include/ogl.h`），C 程序 `glcube.c` 链接 libousia.a 即
 可画 3D——与 Zig 版 glview 同一光栅化器。注意 libm 陷阱：`@floor/
 @round` 在无 SSE4.1 的基线 CPU 上会退化成 libm 调用，C 程序链接没有
 compiler_rt 兜底——所以 gl.zig 里 floor/round/sin/cos 全部自实现。

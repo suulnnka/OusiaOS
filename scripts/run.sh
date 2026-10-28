@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# 远程服务端口映射：4321→guest:23（telnet 式 shell），3122→:3122（zfile 推拉）
+# 远程服务端口映射：4321→guest:23（telnet 式 shell），3122→:3122（ofile 推拉）
 exec qemu-system-x86_64 \
     -cdrom build/ousia.iso \
     -drive file=build/disk.img,format=raw,if=ide \
