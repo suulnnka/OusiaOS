@@ -240,7 +240,7 @@ const menu_items = [_]MenuItem{
     .{ .label = "Paint", .enabled = true, .act = .launch, .path = "/bin/paint" },
     .{ .label = "Calculator", .enabled = true, .act = .launch, .path = "/bin/calc" },
     .{ .label = "Minesweeper", .enabled = true, .act = .launch, .path = "/bin/mine" },
-    .{ .label = "Control Panel", .enabled = true, .act = .launch, .path = "/bin/cp" },
+    .{ .label = "Control Panel", .enabled = true, .act = .launch, .path = "/bin/cpanel" },
     .{ .label = "3D Demos", .enabled = true, .act = .launch, .path = "/bin/glview" },
     .{ .label = "", .enabled = false, .sep = true },
     .{ .label = "About ZOS...", .enabled = true, .act = .about },
@@ -803,7 +803,7 @@ const desk_icons = [_]DeskIcon{
     .{ .label = "Paint", .act = .launch, .path = "/bin/paint" },
     .{ .label = "Mines", .act = .launch, .path = "/bin/mine" },
     .{ .label = "Calc", .act = .launch, .path = "/bin/calc" },
-    .{ .label = "Control Panel", .act = .launch, .path = "/bin/cp" },
+    .{ .label = "Control Panel", .act = .launch, .path = "/bin/cpanel" },
     .{ .label = "Terminal", .act = .terminal },
     .{ .label = "3D Demos", .act = .launch, .path = "/bin/glview" },
 };

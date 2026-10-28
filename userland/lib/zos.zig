@@ -147,9 +147,14 @@ pub fn write(fd: i32, buf: []const u8) isize {
 
 /// open(path) 封装（flags：0 读 / 1 写 / 2 读写 | O_CREAT(0o100) 等）
 pub fn open(path: []const u8, flags: i32) isize {
+    return openMode(path, flags, 0);
+}
+
+/// open 带创建权限位（O_CREAT 时新文件的 mode，八进制如 0o644）
+pub fn openMode(path: []const u8, flags: i32, mode: u32) isize {
     var zbuf: [256]u8 = undefined;
     const p = withNul(&zbuf, path);
-    return syscall3(SYS_open, @intFromPtr(p.ptr), @intCast(@as(u32, @bitCast(flags))), 0);
+    return syscall3(SYS_open, @intFromPtr(p.ptr), @intCast(@as(u32, @bitCast(flags))), mode);
 }
 
 // open flags（与内核/ Linux 一致）

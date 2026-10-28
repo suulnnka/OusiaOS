@@ -95,6 +95,16 @@ df                            # 超级块空闲计数
 宿主机可以用 `debugfs -R "ls -l /" build/disk.img` 直接查看、
 `e2fsck -fn` 体检。详见 [docs/fs.md](docs/fs.md)。
 
+文件互拷（guest ↔ 宿主机）：
+
+```bash
+# QEMU 关机后：宿主机 debugfs 直接读写镜像（scripts/disk.sh 封装）
+./scripts/disk.sh put file.txt /file.txt      # 拷入
+./scripts/disk.sh get /etc/motd ./motd        # 拷出
+./scripts/disk.sh ls /bin                     # 旁路查看
+# guest 内部：cp <src> <dst>（dst 是目录则拷入其中）
+```
+
 ### 图形界面（Win3.1 风格桌面 + 窗口 + 任务栏）
 
 ISO 引导时 GRUB 会把视频模式设为 VBE 640x480x32，内核随后启动

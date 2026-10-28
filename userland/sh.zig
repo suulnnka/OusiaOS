@@ -71,7 +71,7 @@ export fn main() i32 {
                 \\          sleep <sec>  hello  forkdemo  wc [-c|-l|-w]  cdemo
                 \\          ifconfig  ping <ip> [n]  curl http://host[:port]/path
                 \\          beep [hz] [ms]  music  play <file.wav>
-                \\files:    mkdir <dir>  rm [-d] <path>  df
+                \\files:    mkdir <dir>  rm [-d] <path>  cp <src> <dst>  df
                 \\          echo text > file  echo more >> file  (落盘 ext2)
                 \\perms:    id  whoami  su <user>  chmod <octal> <file>
                 \\          chown <user> <file>

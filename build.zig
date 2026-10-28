@@ -53,10 +53,10 @@ pub fn build(b: *std.Build) void {
         "beep", "music",
         "fputest",
         "glview",
-        // 文件系统工具（/mnt 之下操作 ext2 磁盘，其余 tarfs）
-        "mkdir", "rm", "df",
+        // 文件系统工具（根文件系统 ext2，直接落盘）
+        "mkdir", "rm", "df", "cp",
         // 用户态 GUI 应用（kernel/winsys.zig 窗口服务）
-        "fm", "note", "paint", "calc", "mine", "cp",
+        "fm", "note", "paint", "calc", "mine", "cpanel",
         "play",
     };
     const user_target = b.resolveTargetQuery(.{

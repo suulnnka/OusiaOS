@@ -21,7 +21,10 @@ SER = os.environ.get("ZOS_SER", "/tmp/zos-serial.log")
 SHOT = os.environ.get("ZOS_SHOT", "/tmp/zos-shot")
 QEMU = [
     "qemu-system-x86_64",
-    "-cdrom", ISO, "-m", "256M",
+    "-cdrom", ISO,
+    # GUI 应用（/bin/*）在 ext2 根文件系统上——必须挂盘
+    "-drive", "file=build/disk.img,format=raw,if=ide",
+    "-m", "256M",
     "-display", "none",
     "-no-reboot",
     "-serial", "file:" + SER,
@@ -248,11 +251,16 @@ def main():
         time.sleep(0.5)
         shot("16-mine-flag")
 
+        # ---- 控制面板（/bin/cpanel）----
+        open_menu_item(MENU["cp"], "Control Panel")
+        time.sleep(0.8)
+        shot("17-cpanel")
+
         # ---- About + 拖拽（原有回归流程） ----
         open_menu_item(MENU["about"], "About ZOS")
-        shot("17-about")
+        shot("18-about")
         drag(320, 152, 400, 260)  # 拖标题栏
-        shot("18-drag")
+        shot("19-drag")
     finally:
         proc.terminate()
         try:

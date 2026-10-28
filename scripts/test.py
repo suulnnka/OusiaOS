@@ -129,6 +129,9 @@ if __name__ == "__main__":
         "mkdir /demo", "echo hello-ext2 > /demo/a.txt",
         "cat /demo/a.txt", "ls /demo", "chmod 600 /demo/a.txt",
         "rm /demo/a.txt", "rm -d /demo", "df",
+        # cp：文件→文件 与 文件→目录 两种形式
+        "cp /etc/motd /copy.txt", "cat /copy.txt", "cp /etc/motd /tmp",
+        "wc -c /tmp/motd", "rm /copy.txt /tmp/motd",
         "ifconfig", "ping 10.0.2.2 3", "curl http://10.0.2.2:8099/hello.txt",
         "glcube",
     ]

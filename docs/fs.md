@@ -197,6 +197,31 @@ execve 从 ext2 读 ELF：整文件读入 8MB 暂存缓冲（`proc.zig` 的
 
 ## 9. 制作与检查磁盘镜像
 
+## 9. 文件拷入拷出（guest ↔ 宿主机）
+
+两条通道，按"系统是否在跑"选择：
+
+**通道一：宿主机 debugfs（QEMU 未运行时）**——镜像就是块设备的
+全部内容，宿主机 ext2 工具直接读写，内核无需参与。封装在
+`scripts/disk.sh`：
+
+```bash
+./scripts/disk.sh put app.tar /home/app.tar   # 拷入（自动 chmod 644）
+./scripts/disk.sh get /etc/zos.conf ./zos.conf # 拷出
+./scripts/disk.sh ls /bin                      # 旁路：ls/rm/mkdir/stat/check
+./scripts/disk.sh check                        # e2fsck 体检
+```
+
+**通道二：guest 内 cp**——`cp <src> <dst>`（dst 是目录则拷入其中，
+权限位跟随源文件），经 VFS 在 ext2 上真落盘；系统运行中与宿主机
+的批量交换可以"先 put → 重启 → guest 内 cp 挪位"或反向。
+
+网络通道：curl 只做 HTTP GET（下载 = 单向拷入）；实现 PUT 上传
+（net.zig 停等 TCP 已具备）是现成的练习。QEMU 运行中不要用
+disk.sh 碰镜像——两个写者同时操作一个块设备会互相踩。
+
+## 10. 制作与检查磁盘镜像
+
 ```bash
 zig build iso                      # mkiso.sh 调 mkdisk.sh：96MB ext2 根
                                    # （/bin 用户程序 + /etc + diskroot 注释；
@@ -218,7 +243,7 @@ python3 scripts/fscheck.py
 持久性演示：`echo hi > /hi.txt` → Ctrl-A X 退出 → 重新
 `zig build run` → `cat /hi.txt` 还在。
 
-## 10. 已知取舍（= 练习清单）
+## 11. 已知取舍（= 练习清单）
 
 - 无日志：崩溃一致性只保证"单操作内同步写"；加一层日志（journal）
   是经典练习（ext3 就是这么来的）；
