@@ -14,9 +14,9 @@
 ## 2. 构建系统（build.zig）
 
 ```
-zig build            编译内核 → zig-out/bin/zos-kernel.elf
-                     + 用户程序 → zig-out/bin/user/* + zig-out/lib/libzos.a
-zig build iso        上述 + mkiso.sh → build/zos.iso
+zig build            编译内核 → zig-out/bin/ousia-kernel.elf
+                     + 用户程序 → zig-out/bin/user/* + zig-out/lib/libousia.a
+zig build iso        上述 + mkiso.sh → build/ousia.iso
 zig build run        iso + run.sh（QEMU 无头串口模式）
 zig build test-run   iso + scripts/test.py（自动化集成测试）
 ```
@@ -25,12 +25,12 @@ zig build test-run   iso + scripts/test.py（自动化集成测试）
 
 ```
 kernel/main.zig ──(LLVM 后端, mcmodel=kernel, no-red-zone,
-                   linker.ld, boot.S 汇编)──► zos-kernel.elf
+                   linker.ld, boot.S 汇编)──► ousia-kernel.elf
 userland/*.zig  ──(ReleaseSafe, user.ld)──►  zig-out/bin/user/<name>
-userland/lib/*  ──(Zig+C 混编静态库)────►    zig-out/lib/libzos.a
-userland/*.c    ──(zig cc -nostdlib + libzos.a)► zig-out/bin/user/<name>
+userland/lib/*  ──(Zig+C 混编静态库)────►    zig-out/lib/libousia.a
+userland/*.c    ──(zig cc -nostdlib + libousia.a)► zig-out/bin/user/<name>
 rootfs/ + zig-out/bin/user ──(mkinitrd.sh, ustar tar)──► build/initrd.tar
-kernel + initrd.tar + grub.cfg ──(mkiso.sh: grub-mkrescue)──► build/zos.iso
+kernel + initrd.tar + grub.cfg ──(mkiso.sh: grub-mkrescue)──► build/ousia.iso
 ```
 
 几个构建细节（build.zig 注释均有说明）：
@@ -56,11 +56,11 @@ kernel + initrd.tar + grub.cfg ──(mkiso.sh: grub-mkrescue)──► build/zo
 
 | 产物 | 路径 |
 |---|---|
-| 内核 ELF（带符号，可 gdb） | zig-out/bin/zos-kernel.elf |
+| 内核 ELF（带符号，可 gdb） | zig-out/bin/ousia-kernel.elf |
 | 用户程序 | zig-out/bin/user/* |
-| libc 静态库 | zig-out/lib/libzos.a |
+| libc 静态库 | zig-out/lib/libousia.a |
 | initrd tar | build/initrd.tar |
-| 可引导 ISO | build/zos.iso |
+| 可引导 ISO | build/ousia.iso |
 
 ## 3. 运行
 
@@ -73,7 +73,7 @@ zig build run        # 或 ./scripts/run.sh
 等价于：
 
 ```bash
-qemu-system-x86_64 -cdrom build/zos.iso -m 256M \
+qemu-system-x86_64 -cdrom build/ousia.iso -m 256M \
     -display none -serial stdio -no-reboot \
     -netdev user,id=n0 -device e1000,netdev=n0
 ```
@@ -85,7 +85,7 @@ qemu-system-x86_64 -cdrom build/zos.iso -m 256M \
 ### 3.2 VGA 图形模式（键盘输入）
 
 ```bash
-qemu-system-x86_64 -cdrom build/zos.iso -m 256M
+qemu-system-x86_64 -cdrom build/ousia.iso -m 256M
 ```
 
 VGA 文本屏 + PS/2 键盘；串口仍有镜像输出。
@@ -130,7 +130,7 @@ wc/ifconfig/ping/curl`——即"内核+进程+C 移植+网络"四条线各
 GUI 无法走串口断言，用无头截图代替（详见 [gui.md §7](gui.md#7-自动化截图scriptsguishotpy)）：
 
 ```bash
-python3 scripts/guishot.py    # 开机→悬停→菜单→About→拖动，产物 /tmp/zos-shot-*.png
+python3 scripts/guishot.py    # 开机→悬停→菜单→About→拖动，产物 /tmp/ousia-shot-*.png
 ```
 
 原理：QEMU monitor 走 unix socket（`-monitor unix:…,server,nowait`），
@@ -154,7 +154,7 @@ python3 scripts/audiotest.py
 `-serial stdio` 下 COM1 是唯一的日志与交互通道；
 `console.kprintf` 的输出（启动横幅、mmap、pmm/vmm 统计、
 tarfs 条目、e1000 MAC、tick 报告）全部在这里。
-用户态的 printf/zos.printf 也走 write(1) → console → 串口。
+用户态的 printf/ousia.printf 也走 write(1) → console → 串口。
 
 ### 5.2 异常现场
 
@@ -181,31 +181,31 @@ grep -n check_exception /tmp/qemu.log | head    # 找第一条异常
 
 ```bash
 # 终端 1
-qemu-system-x86_64 -cdrom build/zos.iso -m 256M -display none \
+qemu-system-x86_64 -cdrom build/ousia.iso -m 256M -display none \
      -serial stdio -s -S -netdev user,id=n0 -device e1000,netdev=n0
 # 终端 2
-gdb zig-out/bin/zos-kernel.elf
+gdb zig-out/bin/ousia-kernel.elf
 (gdb) target remote :1234
-(gdb) b zos_start
+(gdb) b ousia_start
 (gdb) c
 ```
 
-zos-kernel.elf 带完整符号，可直接对 Zig 函数下断点。
+ousia-kernel.elf 带完整符号，可直接对 Zig 函数下断点。
 注意：入口断在 16 位实模式→32 位（boot.S 前半）时符号还不可用，
-长模式跳板完成后（`zos_start` 起）体验正常。
+长模式跳板完成后（`ousia_start` 起）体验正常。
 
 ### 5.4 看 initrd 与产物
 
 ```bash
 tar -tf build/initrd.tar          # initrd 里有什么
-objdump -d zig-out/bin/zos-kernel.elf | less
+objdump -d zig-out/bin/ousia-kernel.elf | less
 readelf -l zig-out/bin/user/sh    # 用户程序段布局（0x400000 起）
 ```
 
 ### 5.5 "改了没生效"排查顺序
 
 1. `zig build` 是否真的重编了目标文件（看时间戳）；
-2. `build/zos.iso`、`build/initrd.tar` 是否重新生成
+2. `build/ousia.iso`、`build/initrd.tar` 是否重新生成
    （iso 步骤依赖 install，但**外部脚本改动不会自动触发**，
    必要时 `rm -rf build && zig build iso`）;
 3. C 程序：确认 build.zig 的 cc 步骤 addFileInput 覆盖了源文件；

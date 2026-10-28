@@ -58,27 +58,27 @@ const SYS_getuid = 102;
 const SYS_getgid = 104;
 const SYS_setuid = 105;
 const SYS_setgid = 106;
-// ---- ZOS 扩展 ----
-const SYS_zos_psinfo = 500; // ZOS 自定义：读取进程表（ps 命令用）
-const SYS_zos_ping = 501; // ZOS 自定义：ICMP ping
-const SYS_zos_http = 502; // ZOS 自定义：阻塞式 HTTP GET
-const SYS_zos_net_info = 503; // ZOS 自定义：网络配置字符串
-const SYS_zos_beep = 505; // ZOS 自定义：AC'97 蜂鸣（正弦单音）
-const SYS_zos_wav = 506; // ZOS 自定义：播放 WAV 文件（ramfs 路径）
-const SYS_zos_sound = 507; // ZOS 自定义：系统音效（0 click 1 open 2 close 3 ding 4 error 5 tada）
-const SYS_zos_volume = 509; // ZOS 自定义：AC'97 主音量（0..100）
-const SYS_zos_fsinfo = 508; // ZOS 自定义：文件系统概要（df 命令用）
-// ---- ZOS 窗口服务（用户态 GUI 应用）----
+// ---- OusiaOS 扩展 ----
+const SYS_ousia_psinfo = 500; // OusiaOS 自定义：读取进程表（ps 命令用）
+const SYS_ousia_ping = 501; // OusiaOS 自定义：ICMP ping
+const SYS_ousia_http = 502; // OusiaOS 自定义：阻塞式 HTTP GET
+const SYS_ousia_net_info = 503; // OusiaOS 自定义：网络配置字符串
+const SYS_ousia_beep = 505; // OusiaOS 自定义：AC'97 蜂鸣（正弦单音）
+const SYS_ousia_wav = 506; // OusiaOS 自定义：播放 WAV 文件（ramfs 路径）
+const SYS_ousia_sound = 507; // OusiaOS 自定义：系统音效（0 click 1 open 2 close 3 ding 4 error 5 tada）
+const SYS_ousia_volume = 509; // OusiaOS 自定义：AC'97 主音量（0..100）
+const SYS_ousia_fsinfo = 508; // OusiaOS 自定义：文件系统概要（df 命令用）
+// ---- OusiaOS 窗口服务（用户态 GUI 应用）----
 const SYS_win_create = 510;
 const SYS_win_present = 511;
 const SYS_win_poll = 512;
 const SYS_win_wait = 513;
 const SYS_win_color = 514;
 const SYS_win_fmt = 515;
-const SYS_win_clip_set = 516; // ZOS 自定义：写系统剪贴板
-const SYS_win_clip_get = 517; // ZOS 自定义：读系统剪贴板
-const SYS_win_resize = 518; // ZOS 自定义：重分配本进程窗口表面
-const SYS_win_title = 519; // ZOS 自定义：改窗口标题
+const SYS_win_clip_set = 516; // OusiaOS 自定义：写系统剪贴板
+const SYS_win_clip_get = 517; // OusiaOS 自定义：读系统剪贴板
+const SYS_win_resize = 518; // OusiaOS 自定义：重分配本进程窗口表面
+const SYS_win_title = 519; // OusiaOS 自定义：改窗口标题
 // ---- Linux 目录操作 ----
 const SYS_mkdir = 83;
 const SYS_rmdir = 84;
@@ -164,18 +164,18 @@ pub fn handle(frame: *TrapFrame) void {
         SYS_getgid => @intCast(proc.current().?.gid),
         SYS_setuid => sysSetUid(@intCast(a1)),
         SYS_setgid => sysSetGid(@intCast(a1)),
-        SYS_zos_psinfo => sysPsinfo(a1, a2),
-        SYS_zos_ping => @import("net.zig").ping(@truncate(a1), @truncate(a2)),
-        SYS_zos_http => sysHttpGet(a1, @truncate(a2), a3, frame),
-        SYS_zos_net_info => sysNetInfo(a1, a2),
-        SYS_zos_beep => sysBeep(a1, a2),
-        SYS_zos_wav => sysWav(a1),
-        SYS_zos_sound => @import("audio.zig").playSystem(@truncate(a1)),
-        SYS_zos_volume => blk: {
+        SYS_ousia_psinfo => sysPsinfo(a1, a2),
+        SYS_ousia_ping => @import("net.zig").ping(@truncate(a1), @truncate(a2)),
+        SYS_ousia_http => sysHttpGet(a1, @truncate(a2), a3, frame),
+        SYS_ousia_net_info => sysNetInfo(a1, a2),
+        SYS_ousia_beep => sysBeep(a1, a2),
+        SYS_ousia_wav => sysWav(a1),
+        SYS_ousia_sound => @import("audio.zig").playSystem(@truncate(a1)),
+        SYS_ousia_volume => blk: {
             @import("audio.zig").setVolume(@truncate(a1));
             break :blk 0;
         },
-        SYS_zos_fsinfo => sysFsInfo(a1, a2),
+        SYS_ousia_fsinfo => sysFsInfo(a1, a2),
         SYS_win_create => @import("winsys.zig").sysCreate(a1, a2, a3),
         SYS_win_present => @import("winsys.zig").sysPresent(),
         SYS_win_poll => @import("winsys.zig").sysPoll(a1, a2),
@@ -504,10 +504,10 @@ fn sysNanosleep(req: usize) isize {
 fn sysUname(buf: usize) isize {
     const b = userSlice(buf, 6 * 65);
     @memset(b, 0);
-    copyStr(b[0..65], "ZOS"); // sysname
-    copyStr(b[65..130], "zos"); // nodename
+    copyStr(b[0..65], "OusiaOS"); // sysname
+    copyStr(b[65..130], "ousia"); // nodename
     copyStr(b[130..195], "0.3.0"); // release
-    copyStr(b[195..260], "ZOS #1 teaching kernel (zig)"); // version
+    copyStr(b[195..260], "OusiaOS #1 teaching kernel (zig)"); // version
     copyStr(b[260..325], "x86_64"); // machine
     return 0;
 }
@@ -655,9 +655,9 @@ fn sysSetGid(new_gid: u32) isize {
     return 0;
 }
 
-// ================= ZOS 扩展 =================
+// ================= OusiaOS 扩展 =================
 
-/// 每项：pid/ppid/state/字段 + 名字，与用户态 zos.zig 的 PsInfo 对应
+/// 每项：pid/ppid/state/字段 + 名字，与用户态 ousia.zig 的 PsInfo 对应
 const PsEntry = extern struct {
     pid: u32,
     ppid: u32,
@@ -689,13 +689,13 @@ fn sysNetInfo(buf: usize, len: usize) isize {
     return @intCast(info.len);
 }
 
-/// zos_beep(freq, ms)：阻塞播放一段正弦纯音（AC'97）
+/// ousia_beep(freq, ms)：阻塞播放一段正弦纯音（AC'97）
 fn sysBeep(freq: usize, ms: usize) isize {
     if (freq < 20 or freq > 8000 or ms == 0 or ms > 10000) return EINVAL;
     return @import("audio.zig").playTone(@intCast(freq), @intCast(ms));
 }
 
-/// zos_wav(path)：读 ramfs WAV 文件并播放（内核以 root 读，root 旁路）。
+/// ousia_wav(path)：读 ramfs WAV 文件并播放（内核以 root 读，root 旁路）。
 /// 文件读取/缓冲在 audio.zig（512KB 静态缓冲——内核栈只有 16KB，
 /// 缓冲绝不能放栈上）。
 fn sysWav(path: usize) isize {
@@ -755,7 +755,7 @@ fn sysUnlink(path: usize) isize {
     return 0;
 }
 
-/// zos_fsinfo(buf, len)：文件系统概要（df 命令用；未挂载磁盘报 ENOSYS 风格）
+/// ousia_fsinfo(buf, len)：文件系统概要（df 命令用；未挂载磁盘报 ENOSYS 风格）
 fn sysFsInfo(buf: usize, len: usize) isize {
     var b: [256]u8 = undefined;
     const s = vfs.ext2Info(&b) orelse return ENOSYS;

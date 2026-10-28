@@ -1,6 +1,6 @@
 # 用户态：crt0、系统调用库、libc 与程序移植
 
-ZOS 的用户态目标是双重的：**Zig 写系统工具**（像内核一样直接、
+OusiaOS 的用户态目标是双重的：**Zig 写系统工具**（像内核一样直接、
 无依赖），以及**让标准 C 程序零修改移植**（真 Unix `wc`、
 `curl` 都是活例子）。本文覆盖从进程入口到 libc 的整条链路，
 最后给出移植指南。
@@ -11,7 +11,7 @@ ZOS 的用户态目标是双重的：**Zig 写系统工具**（像内核一样�
 crt0.zig   _start：摆好 SysV 栈布局 → main → exit
   │
   ├─ Zig 路线 ──────────────┬─ C 路线 ─────────────────┐
-  │ zos.zig                 │ libc.zig（Zig 导出 C ABI）│
+  │ ousia.zig                 │ libc.zig（Zig 导出 C ABI）│
   │  syscall 封装/printf/   │  + clib.c（C 的 printf    │
   │  malloc/字符串           │    全家族 + getopt）      │
   │                         │  + include/*.h 标准头     │
@@ -25,16 +25,16 @@ crt0.zig   _start：摆好 SysV 栈布局 → main → exit
 （envp 恒为空表）。`_start`（naked 函数）做四件事：
 
 1. 从栈上取 argc/argv，`environ` 指向空表；
-2. 存入导出变量 `__argc/__argv`（zos.zig 的 `argc()/arg()` 读它们）；
+2. 存入导出变量 `__argc/__argv`（ousia.zig 的 `argc()/arg()` 读它们）；
 3. 栈对齐 16 字节（SysV 要求）后 `call main`；
 4. main 返回后 `exit(返回值)`——先跑 atexit 链再陷入内核。
 
 > crt0 同时 `comptime { _ = @import("libc.zig"); }`——
 > **Zig 程序也因此获得完整 C 符号**，Zig/C 互调零成本。
 
-## 2. Zig 程序路线：zos.zig
+## 2. Zig 程序路线：ousia.zig
 
-`userland/lib/zos.zig` 是内核之外的第二把"瑞士军刀"：
+`userland/lib/ousia.zig` 是内核之外的第二把"瑞士军刀"：
 
 - **系统调用封装**：`syscall0/1/3/5` 内联汇编 + POSIX 风格函数
   （read/write/open/fork/execve/waitpid/getcwd…）；
@@ -49,11 +49,11 @@ crt0.zig   _start：摆好 SysV 栈布局 → main → exit
 写一个新 Zig 命令的骨架：
 
 ```zig
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 comptime { _ = @import("lib/crt0.zig"); }   // 拉入 _start
 
 export fn main() i32 {
-    zos.printf("hello {s}, pid={d}\n", .{"zos", zos.getpid()});
+    ousia.printf("hello {s}, pid={d}\n", .{"ousia", ousia.getpid()});
     return 0;
 }
 ```
@@ -96,7 +96,7 @@ export fn main() i32 {
    之类的内部符号要 libc 自备；栈探针长度经 **rax** 传递
    （zig 内部 ABI，不走 SysV，README 踩坑 6）。
 
-## 4. malloc 实现（zos.zig，libc 的 malloc 也建在其上）
+## 4. malloc 实现（ousia.zig，libc 的 malloc 也建在其上）
 
 K&R 风格空闲链表分配器：
 
@@ -138,13 +138,13 @@ execve 一个 ELF，语言无关。
 zig cc -target x86_64-freestanding -O1 -nostdlib -no-pie \
       -fno-stack-protector \
       -Iuserland/include -Wl,--script=userland/user.ld -Wl,-e,_start \
-      -o zig-out/bin/user/foo userland/foo.c zig-out/lib/libzos.a
+      -o zig-out/bin/user/foo userland/foo.c zig-out/lib/libousia.a
 ```
 
 要点：
 
 - **静态 ELF，基址 0x400000**（user.ld），无 PIE；
-- 链接 libzos.a（libc.zig+clib.c+crt0 打包）；
+- 链接 libousia.a（libc.zig+clib.c+crt0 打包）；
 - 新程序自动进 initrd（mkinitrd.sh 合并 zig-out/bin/user → /bin/）。
 
 ### 6.1 现成示例
@@ -153,7 +153,7 @@ zig cc -target x86_64-freestanding -O1 -nostdlib -no-pie \
 |---|---|---|
 | `wc.c` | C | 真 Unix wc 移植（-c/-l/-w），stdio 读文件 |
 | `cdemo.c` | C | libc 全家桶自检：printf/字符串/qsort/malloc/atexit/getopt |
-| `curl.c` | C | HTTP 客户端：标准 C + 一个 `zos_http_get` extern 扩展调用 |
+| `curl.c` | C | HTTP 客户端：标准 C + 一个 `ousia_http_get` extern 扩展调用 |
 
 ### 6.2 移植边界（动手前先对照）
 
@@ -184,15 +184,15 @@ zig cc -target x86_64-freestanding -O1 -nostdlib -no-pie \
 |---|---|---|
 | sh | Zig | shell（init 进程） |
 | ls / cat / echo | Zig | 基础文件操作 |
-| ps | Zig | zos_psinfo 展示进程表 |
+| ps | Zig | ousia_psinfo 展示进程表 |
 | uname | Zig | 系统信息 |
 | sleep | Zig | nanosleep |
 | hello | Zig | 最小程序样例 |
 | forkdemo | Zig | fork 并发演示（父子交替打印） |
-| ping / ifconfig | Zig | zos_ping / zos_net_info |
+| ping / ifconfig | Zig | ousia_ping / ousia_net_info |
 | wc | C | Unix wc 移植 |
 | cdemo | C | libc 自检 |
 | curl | C | HTTP 客户端 |
 | mkdir / rm / df | Zig | 目录创建 / 删除（-d 删空目录）/ 文件系统概要 |
-| play | Zig | 播放 WAV（SYS_zos_wav，内核解析 RIFF + AC'97 DMA） |
+| play | Zig | 播放 WAV（SYS_ousia_wav，内核解析 RIFF + AC'97 DMA） |
 | fm / note / paint / calc / mine / cp | Zig | 用户态 GUI 应用（lib/win.zig 窗口库） |

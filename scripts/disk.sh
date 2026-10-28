@@ -3,7 +3,7 @@
 #
 # QEMU 未运行时直接操作 build/disk.img：
 #   拷入：scripts/disk.sh put <宿主文件> <盘上路径>     # 如 put app.tar /home/app.tar
-#   拷出：scripts/disk.sh get <盘上路径> <宿主文件>     # 如 get /etc/zos.conf ./zos.conf
+#   拷出：scripts/disk.sh get <盘上路径> <宿主文件>     # 如 get /etc/ousia.conf ./ousia.conf
 #   旁路：ls / rm / mkdir / stat / check（e2fsck）
 #
 # 教学要点：镜像就是块设备的全部内容，宿主机的 ext2 工具能直接读

@@ -23,7 +23,7 @@ export fn _start() callconv(.naked) noreturn {
     asm volatile (
         \\movq (%rsp), %rdi          # argc
         \\leaq 8(%rsp), %rsi         # argv[]
-        \\leaq environ(%rip), %rdx   # envp（ZOS 恒为空表）
+        \\leaq environ(%rip), %rdx   # envp（OusiaOS 恒为空表）
         \\movq %rdi, __argc(%rip)
         \\movq %rsi, __argv(%rip)
         \\andq $-16, %rsp            # SysV: 入口处 16 字节对齐

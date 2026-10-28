@@ -1,6 +1,6 @@
 # 图形界面：合成器、窗口管理与内核应用
 
-ZOS 的 GUI 是**内核内**的图形子系统（`kernel/gui.zig` 窗口管理 +
+OusiaOS 的 GUI 是**内核内**的图形子系统（`kernel/gui.zig` 窗口管理 +
 `kernel/apps.zig` 应用分发 + `kernel/apps/<name>.zig` 每应用一个源
 文件 + `kernel/mouse.zig` + `kernel/font.zig`）：GRUB 负责切换视频
 模式，内核拿到帧缓冲后由**合成器（compositor）**管理分层表面的
@@ -17,12 +17,12 @@ ZOS 的 GUI 是**内核内**的图形子系统（`kernel/gui.zig` 窗口管理 +
 │     ┌ File Manager ───────────────┐                 │
 │     │ /etc │ .. │ ▲ │ 预览│  ┌ Paint ─┐┌Calc┐      │
 ├────────────────────────────────────────────────────┤
-│ [ZOS] │ [Files][Note][Term][Paint][Calc][Mines] ⌚   │ ← 任务栏
+│ [OusiaOS] │ [Files][Note][Term][Paint][Calc][Mines] ⌚   │ ← 任务栏
 └────────────────────────────────────────────────────┘
    ▲            ▲                        ▲
    │            └─ 最小化/还原/提层        └─ RTC 实时钟
    └─ 开始菜单：File Manager / Notepad / Terminal /
-      Paint / Calculator / Minesweeper / About ZOS
+      Paint / Calculator / Minesweeper / About OusiaOS
 
 图层（z 序自底向上）：桌面 → 窗口（zorder 置换数组）→ 任务栏
 → 弹出菜单 → 鼠标光标。窗口点击自动提到顶层（活动窗口 = 藏青
@@ -102,7 +102,7 @@ Win3.1 视觉规格（`gui.zig` 顶部调色板）：
 | 凹斜面 | 上者反转 |
 | 标题栏 | 藏青 #000080 + 白粗体；左侧系统菜单盒（横杠）、右侧▼关闭盒 |
 | 菜单 | 白底 1px 黑框 + 右下 2px 灰投影；悬停=藏青底白字；禁用项灰字 |
-| 任务栏 | 24px：顶缘白线；ZOS 按钮（按下=凹+文字位移）；蚀刻分隔线；凹时钟面板 |
+| 任务栏 | 24px：顶缘白线；OusiaOS 按钮（按下=凹+文字位移）；蚀刻分隔线；凹时钟面板 |
 
 字体来自系统 PSF 控制台字体（经典 VGA 8×16）：
 
@@ -134,7 +134,7 @@ python3 scripts/genfont.py /usr/share/consolefonts/Uni2-VGA16.psf.gz > kernel/fo
 左键按下自顶向下：**菜单**（开着时本次点击只作用于它，点外收起）→
 **窗口**（沿 z 序找最先命中的；关闭盒 = 隐藏；标题栏 = 开始拖拽；
 客户区交给 `apps.onPress` 并记录【鼠标捕获】；任何命中先把窗口提到
-z 序顶端）→ **任务栏**（ZOS 按钮 = 弹出菜单；窗口按钮 = 最小化/
+z 序顶端）→ **任务栏**（OusiaOS 按钮 = 弹出菜单；窗口按钮 = 最小化/
 还原/提层三态）→ 桌面无操作。右键只转发给最顶层窗口的客户区
 （扫雷插旗）。窗口几何与命中共用同一组 Rect 函数（`titleRect`/
 `closeBoxRect`/`clientRect`...），绘制和交互永不脱节。
@@ -153,7 +153,7 @@ z 序顶端）→ **任务栏**（ZOS 按钮 = 弹出菜单；窗口按钮 = 最
 
 ## 7. 用户态应用与窗口服务（kernel/winsys.zig + userland/{fm,note,paint,calc,mine}.zig）
 
-ZOS 0.2 起 GUI 应用是**真正的用户进程**：菜单点击在 IRQ12 里
+OusiaOS 0.2 起 GUI 应用是**真正的用户进程**：菜单点击在 IRQ12 里
 `proc.spawnKernel("/bin/paint")`（中断门 IF=0，与调度器天然互斥），
 应用 main() 里 `win_create(w,h,title)` 拿到一块【共享表面】——
 一组 pmm 页帧双映射：用户态 RW（syscall 返回的虚拟地址，应用往
@@ -183,7 +183,7 @@ win_wait 空队列时进程 `blocked`（新调度状态），事件到达由 IRQ
 它的栈后收割（内核栈/页表/表面帧全回收）。
 
 留在内核的只有两个窗口：**Terminal**（控制台三路输出的镜像，
-环形行缓冲天然属于内核）与 **About ZOS**（窗口管理器自己的对话框）。
+环形行缓冲天然属于内核）与 **About OusiaOS**（窗口管理器自己的对话框）。
 
 ### 五个用户态应用（kernel/apps/ 已清空，全部迁往 userland/）
 
@@ -242,11 +242,11 @@ File Manager（进 /etc、预览）→ Terminal（`sendkey` 真打一条 `ls`）
 About + 标题栏拖动。
 
 ```bash
-python3 scripts/guishot.py   # 产物 /tmp/zos-shot-*.png
+python3 scripts/guishot.py   # 产物 /tmp/ousia-shot-*.png
 ```
 
 两个坑（都踩过）：HMP `mouse_button` 的位掩码是 PS/2 位序
-**1=左 2=右 4=中**（4 会被当忽略的中键）；菜单开着时再点 ZOS 按钮
+**1=左 2=右 4=中**（4 会被当忽略的中键）；菜单开着时再点 OusiaOS 按钮
 是"关菜单"而不是"保持打开"，连续开应用要先点桌面收起。
 
 ## 9. 已实现清单（0.2.0）与剩余边界
@@ -265,7 +265,7 @@ python3 scripts/guishot.py   # 产物 /tmp/zos-shot-*.png
 - **桌面图标**：单击选中、双击启动（drawDeskGlyph 16 色小位图）。
 - **剪贴板**：内核全局 1KB 文本缓冲，syscalls 516/517；Ctrl+C/X/V
   以控制码走 EV_KEY，应用自行翻译（win.Edit 内建）。
-- **屏保/壁纸**：无输入超时（/etc/zos.conf `saver=`，Control Panel
+- **屏保/壁纸**：无输入超时（/etc/ousia.conf `saver=`，Control Panel
   可调）启动星场动画（小脏区增量重画）；`wallpaper=` 改桌面底色。
 - **Terminal 回滚**：PgUp/PgDn/Home/End（gui.onKey 只在终端是活动
   窗口时截走这四个键），行数列数随窗口尺寸现算。

@@ -1,6 +1,6 @@
 # 文件系统：ATA 块设备 + ext2 根文件系统（读/写）
 
-本文讲 ZOS 怎么从"一块真磁盘"到"/bin、/etc 全在盘上，写进去的
+本文讲 OusiaOS 怎么从"一块真磁盘"到"/bin、/etc 全在盘上，写进去的
 文件重启还在"。三层自底向上：
 
 ```
@@ -207,7 +207,7 @@ execve 从 ext2 读 ELF：整文件读入 8MB 暂存缓冲（`proc.zig` 的
 
 ```bash
 ./scripts/disk.sh put app.tar /home/app.tar   # 拷入（自动 chmod 644）
-./scripts/disk.sh get /etc/zos.conf ./zos.conf # 拷出
+./scripts/disk.sh get /etc/ousia.conf ./ousia.conf # 拷出
 ./scripts/disk.sh ls /bin                      # 旁路：ls/rm/mkdir/stat/check
 ./scripts/disk.sh check                        # e2fsck 体检
 ```
@@ -215,15 +215,15 @@ execve 从 ext2 读 ELF：整文件读入 8MB 暂存缓冲（`proc.zig` 的
 **通道二：guest 内 cp**——`cp <src> <dst>`（dst 是目录则拷入其中，
 权限位跟随源文件），经 VFS 在 ext2 上真落盘。
 
-**通道三：网络（系统运行中，双向）**——zfile 协议（类 scp，
+**通道三：网络（系统运行中，双向）**——ofile 协议（类 scp，
 端口 3122→宿主 hostfwd）：
 
 ```bash
-python3 scripts/zcp.py put <本地文件> <ZOS路径>   # 拷入（QEMU 运行中）
-python3 scripts/zcp.py get <ZOS路径> <本地文件>   # 拷出
+python3 scripts/ocp.py put <本地文件> <OusiaOS路径>   # 拷入（QEMU 运行中）
+python3 scripts/ocp.py get <OusiaOS路径> <本地文件>   # 拷出
 ```
 
-（curl 只做 HTTP GET，那是下载的另一种形态；zfile 是专用的双向
+（curl 只做 HTTP GET，那是下载的另一种形态；ofile 是专用的双向
 文件通道，内核以 root 落盘。）QEMU 运行中不要用 disk.sh 碰镜像
 ——两个写者同时操作一个块设备会互相踩；运行中交换走本通道。
 

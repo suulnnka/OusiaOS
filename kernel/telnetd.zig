@@ -1,4 +1,4 @@
-//! telnetd —— 明文远程 shell（:23）+ zfile 文件服务（:3122）
+//! telnetd —— 明文远程 shell（:23）+ ofile 文件服务（:3122）
 //!
 //! 教学要点：
 //!   - inetd 模型的最小版：内核 TCP 服务器收到连接 → 拉起一个用户进程，
@@ -9,7 +9,7 @@
 //!     CRLF 归一。这正是 tty 行规程存在的理由（这里是极简复刻）
 //!   - telnet 协议里 0xFF 是转义（IAC 命令序列），必须解析剥离，
 //!     否则会被当成数据
-//!   - zfile 协议（类 scp）：一行的 ASCII 命令头 + 原始字节流——
+//!   - ofile 协议（类 scp）：一行的 ASCII 命令头 + 原始字节流——
 //!     "GET /path\n" → "OK <size>\n" + 内容；"PUT /path <size>\n" +
 //!     内容 → "OK\n"。内核以 root 读写 vfs（ext2 真落盘）
 //!
@@ -55,7 +55,7 @@ pub fn init() void {
     _ = net.listen(SHELL_CONN, TELNET_PORT, .shell);
     _ = net.listen(FILE_CONN, FILE_PORT, .file);
     pit.srv_hook = &poll;
-    console.kprintf("telnetd: remote shell :23 / zfile :3122 (plaintext, no auth)\n", .{});
+    console.kprintf("telnetd: remote shell :23 / ofile :3122 (plaintext, no auth)\n", .{});
 }
 
 fn onData(idx: usize, bytes: []const u8) void {
@@ -214,7 +214,7 @@ fn poll() void {
     filePoll();
 }
 
-// ---------------- zfile：类 scp 的文件推拉协议 ----------------
+// ---------------- ofile：类 scp 的文件推拉协议 ----------------
 //
 //   客户端 → 服务端：一行命令 + 可能紧跟的字节流
 //     "GET /path\n"                → "OK <size>\n" + <size> 字节 | "ERR <why>\n"

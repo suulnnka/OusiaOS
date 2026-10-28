@@ -1,6 +1,6 @@
 //! glview —— miniGL 三场景演示（用户态 GUI 应用）
 //!
-//! 展示 ZOS 的软件 OpenGL 子集在真实窗口系统里的样子：
+//! 展示 OusiaOS 的软件 OpenGL 子集在真实窗口系统里的样子：
 //!   1. Checker Cube  —— 透视校正纹理映射（comptime 棋盘纹理）
 //!   2. Gouraud Torus —— 逐顶点光照 + 平滑着色 + 背面剔除
 //!   3. Wave Grid     —— 动态线框地形（GL_LINES + 深度测试）
@@ -11,7 +11,7 @@
 //! 交互：点击画面 / 左右方向键切换场景；q 或关闭盒退出。
 
 const std = @import("std");
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 const win = @import("lib/win.zig");
 const gl = @import("lib/gl.zig");
 
@@ -307,7 +307,7 @@ fn fmtLine(buf: []u8, name: []const u8) []const u8 {
 
 fn fpsTick() void {
     fps_frames += 1;
-    const s: i64 = @bitCast(zos.syscall0(201));
+    const s: i64 = @bitCast(ousia.syscall0(201));
     if (s != fps_sec) {
         if (fps_sec >= 0) fps = fps_frames;
         fps_frames = 0;
@@ -317,7 +317,7 @@ fn fpsTick() void {
 
 export fn main() i32 {
     if (!win.create(CW, CH, "GL Demos - miniGL")) {
-        zos.printf("glview: win_create failed (GUI on?)\n", .{});
+        ousia.printf("glview: win_create failed (GUI on?)\n", .{});
         return 1;
     }
     win.initColors();
@@ -332,7 +332,7 @@ export fn main() i32 {
     gl.bindTexture(gl.GL_TEXTURE_2D, name);
     gl.texImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, TEX, TEX, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, &checker_tex);
 
-    zos.printf("glview: miniGL demos up (glerr={d})\n", .{@as(u32, gl.getError())});
+    ousia.printf("glview: miniGL demos up (glerr={d})\n", .{@as(u32, gl.getError())});
 
     while (true) {
         var evs: [8]win.Event = undefined;

@@ -1,8 +1,8 @@
-//! ZOS 构建脚本
+//! OusiaOS 构建脚本
 //!
 //! 常用命令：
-//!   zig build          编译内核 → zig-out/bin/zos-kernel.elf
-//!   zig build iso      编译内核并制作 GRUB 启动 ISO → build/zos.iso
+//!   zig build          编译内核 → zig-out/bin/ousia-kernel.elf
+//!   zig build iso      编译内核并制作 GRUB 启动 ISO → build/ousia.iso
 //!   zig build run      构建 ISO 并启动 QEMU（串口接到当前终端）
 //!
 //! 教学要点：内核是 freestanding 目标（无标准库运行时依赖），
@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const kernel = b.addExecutable(.{
-        .name = "zos-kernel.elf",
+        .name = "ousia-kernel.elf",
         .root_module = kernel_mod,
         .use_llvm = true, // 使用 LLVM 后端（自研后端不支持 port I/O 指令）
     });
@@ -83,7 +83,7 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&install.step);
     }
 
-    // ---------------- C 程序支持：libzos.a（libc.zig + clib.c + crt0）----------------
+    // ---------------- C 程序支持：libousia.a（libc.zig + clib.c + crt0）----------------
     // 用 zig cc 把 C 程序链到这个静态库，即可移植标准 C 代码。
     const libc_mod = b.createModule(.{
         .root_source_file = b.path("userland/lib/libc.zig"),
@@ -100,14 +100,14 @@ pub fn build(b: *std.Build) void {
     libc_mod.addIncludePath(b.path("userland/include"));
 
     const libc_lib = b.addLibrary(.{
-        .name = "zos",
+        .name = "ousia",
         .root_module = libc_mod,
         .linkage = .static,
     });
     const install_libc = b.addInstallArtifact(libc_lib, .{});
     b.getInstallStep().dependOn(&install_libc.step);
 
-    // ---------------- C 程序（zig cc + libzos.a）----------------
+    // ---------------- C 程序（zig cc + libousia.a）----------------
     const c_progs = [_][]const u8{ "cdemo", "wc", "curl", "glcube" };
     inline for (c_progs) |prog| {
         const cc = b.addSystemCommand(&.{
@@ -125,7 +125,7 @@ pub fn build(b: *std.Build) void {
         const out = cc.addOutputFileArg(prog);
         cc.addFileInput(b.path("userland/" ++ prog ++ ".c"));
         cc.addArg("userland/" ++ prog ++ ".c");
-        cc.addArg("zig-out/lib/libzos.a");
+        cc.addArg("zig-out/lib/libousia.a");
         cc.step.dependOn(&install_libc.step);
         const install = b.addInstallFile(out, "bin/user/" ++ prog);
         install.step.dependOn(&cc.step);
@@ -145,7 +145,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(gl_tests).step);
 
     // ---------------- ISO（GRUB 引导镜像）----------------
-    const iso_step = b.step("iso", "Build bootable GRUB ISO (build/zos.iso)");
+    const iso_step = b.step("iso", "Build bootable GRUB ISO (build/ousia.iso)");
     const mkiso = b.addSystemCommand(&.{"./scripts/mkiso.sh"});
     mkiso.step.dependOn(b.getInstallStep());
     iso_step.dependOn(&mkiso.step);

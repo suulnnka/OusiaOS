@@ -7,7 +7,7 @@
 //! 重算一遍同样序列，位级比对。IEEE 运算是确定性的——两次结果不同，
 //! 说明 XMM 现场被切换践踏了。
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 
 comptime {
     _ = @import("lib/crt0.zig");
@@ -25,11 +25,11 @@ fn step(i: usize, tag: f64) f64 {
 }
 
 export fn main() i32 {
-    zos.printf("fputest: pid={d} forking...\n", .{zos.getpid()});
+    ousia.printf("fputest: pid={d} forking...\n", .{ousia.getpid()});
 
-    const pid = zos.fork();
+    const pid = ousia.fork();
     if (pid < 0) {
-        zos.printf("fputest: fork failed\n", .{});
+        ousia.printf("fputest: fork failed\n", .{});
         return 1;
     }
 
@@ -41,7 +41,7 @@ export fn main() i32 {
     var acc: f64 = 0;
     var i: usize = 0;
     while (i < 5000) : (i += 1) {
-        if (i % 500 == 0) zos.sleepMs(10);
+        if (i % 500 == 0) ousia.sleepMs(10);
         acc += step(i, tag);
     }
 
@@ -52,14 +52,14 @@ export fn main() i32 {
 
     const who: []const u8 = if (pid == 0) "child " else "parent";
     if (@as(u64, @bitCast(acc)) == @as(u64, @bitCast(acc2))) {
-        zos.printf("fputest: [{s}] OK (acc bits {d})\n", .{who, @as(u64, @bitCast(acc))});
+        ousia.printf("fputest: [{s}] OK (acc bits {d})\n", .{who, @as(u64, @bitCast(acc))});
     } else {
-        zos.printf("fputest: [{s}] MISMATCH {d} != {d}\n", .{ who, @as(u64, @bitCast(acc)), @as(u64, @bitCast(acc2)) });
+        ousia.printf("fputest: [{s}] MISMATCH {d} != {d}\n", .{ who, @as(u64, @bitCast(acc)), @as(u64, @bitCast(acc2)) });
     }
 
-    if (pid == 0) zos.exit(0);
+    if (pid == 0) ousia.exit(0);
     var status: i32 = 0;
-    _ = zos.waitpid(pid, &status);
-    zos.printf("fputest: done\n", .{});
+    _ = ousia.waitpid(pid, &status);
+    ousia.printf("fputest: done\n", .{});
     return 0;
 }

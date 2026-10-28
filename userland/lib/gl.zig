@@ -1,7 +1,7 @@
-//! miniGL —— ZOS 自研的 OpenGL 1.x 风格软件光栅化器
+//! miniGL —— OusiaOS 自研的 OpenGL 1.x 风格软件光栅化器
 //!
 //! 设计约束（教学定位）：
-//!   - 纯 Zig、零内核依赖、零第三方依赖：它是 libzos 的一部分，被
+//!   - 纯 Zig、零内核依赖、零第三方依赖：它是 libousia 的一部分，被
 //!     用户态 GUI 应用（userland/glview.zig、glcube.c）直接使用；
 //!     因为不碰任何内核设施，还能在 host 上跑单元测试（zig build test）。
 //!   - freestanding 环境：没有 libm，sin/cos 自己实现；没有堆，

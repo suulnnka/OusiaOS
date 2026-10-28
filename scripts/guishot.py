@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""ZOS GUI 截图/操作工具：无头 QEMU + HMP monitor 驱动鼠标。
+"""OusiaOS GUI 截图/操作工具：无头 QEMU + HMP monitor 驱动鼠标。
 
 用法:
     python3 scripts/guishot.py            # 开机截图 + 菜单/About/拖动全套
-产物: /tmp/zos-shot-*.png
+产物: /tmp/oos-shot-*.png
 """
 
 import os
@@ -14,11 +14,11 @@ import sys
 import time
 import zlib
 
-ISO = "build/zos.iso"
+ISO = "build/ousia.iso"
 # 多个 ZCode 会话并行时会互相覆盖：可用环境变量隔离三件套
-MON = os.environ.get("ZOS_MON", "/tmp/zos-mon.sock")
-SER = os.environ.get("ZOS_SER", "/tmp/zos-serial.log")
-SHOT = os.environ.get("ZOS_SHOT", "/tmp/zos-shot")
+MON = os.environ.get("OUSIA_MON", "/tmp/oos-mon.sock")
+SER = os.environ.get("OUSIA_SER", "/tmp/oos-serial.log")
+SHOT = os.environ.get("OUSIA_SHOT", "/tmp/oos-shot")
 QEMU = [
     "qemu-system-x86_64",
     "-cdrom", ISO,
@@ -58,9 +58,9 @@ def hmp(cmd, wait=0.3):
 def boot():
     global proc
     # 清理上次运行可能残留的 QEMU（占着 monitor socket 会让新实例起不来）
-    subprocess.run(["pkill", "-f", "zos-mon.sock"], check=False)
+    subprocess.run(["pkill", "-f", "oos-mon.sock"], check=False)
     for _ in range(10):
-        if subprocess.run(["pgrep", "-f", "zos-mon.sock"], capture_output=True).returncode != 0:
+        if subprocess.run(["pgrep", "-f", "oos-mon.sock"], capture_output=True).returncode != 0:
             break
         time.sleep(0.3)
     try:
@@ -68,7 +68,7 @@ def boot():
     except FileNotFoundError:
         pass
     open(SER, "w").close()
-    errf = open("/tmp/zos-qemu-err.txt", "w")
+    errf = open("/tmp/ousia-qemu-err.txt", "w")
     proc = subprocess.Popen(QEMU, stdout=subprocess.DEVNULL, stderr=errf)
     errf.close()
     deadline = time.time() + 40
@@ -159,7 +159,7 @@ def type_text(s):
 
 
 def open_menu_item(item_y, name):
-    click(30, 466)           # ZOS 按钮
+    click(30, 466)           # OusiaOS 按钮
     # 菜单项：item_y 是行顶（gui.zig menuRect 每项 18px）——点行中央，
     # 避开相对位移累积的 ±1px 与菜单 3px 内边距死区
     click(40, item_y + 9)
@@ -188,7 +188,7 @@ def main():
     except FileNotFoundError:
         pass
     if not boot():
-        print("[FAIL] GUI 未启动（看 /tmp/zos-serial.log）")
+        print("[FAIL] GUI 未启动（看 /tmp/ousia-serial.log）")
         return 1
     try:
         shot("0-boot")
@@ -236,7 +236,7 @@ def main():
         open_menu_item(MENU["note"], "Notepad")
         time.sleep(0.8)      # /bin/note 启动；活动窗口=它 → 键盘归它
         shot("12-note-new")
-        type_text("hello zos\nsecond line")
+        type_text("hello ousia\nsecond line")
         time.sleep(0.3)
         shot("13-note-text")
 
@@ -257,7 +257,7 @@ def main():
         shot("17-cpanel")
 
         # ---- About + 拖拽（原有回归流程） ----
-        open_menu_item(MENU["about"], "About ZOS")
+        open_menu_item(MENU["about"], "About OusiaOS")
         shot("18-about")
         drag(320, 152, 400, 260)  # 拖标题栏
         shot("19-drag")
@@ -267,7 +267,7 @@ def main():
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
-        subprocess.run(["pkill", "-9", "-f", "zos-mon.sock"], check=False)
+        subprocess.run(["pkill", "-9", "-f", "oos-mon.sock"], check=False)
     return 0
 
 

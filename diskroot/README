@@ -1,7 +1,7 @@
-This is the ZOS root filesystem: a real ext2 disk (build/disk.img).
+This is the OusiaOS root filesystem: a real ext2 disk (build/disk.img).
 
 /bin  user programs (loaded by execve straight from these ext2 inodes)
-/etc  system config (motd, passwd, zos.conf -- edits persist!)
+/etc  system config (motd, passwd, ousia.conf -- edits persist!)
 
 Unlike the old initrd/tarfs (a RAM filesystem), everything here lives
 in on-disk ext2 structures: superblock, block/inode bitmaps, inode

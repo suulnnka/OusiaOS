@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""ZOS miniGL 视觉回归：无头 QEMU + HMP 驱动鼠标，验证 GL 演示。
+"""OusiaOS miniGL 视觉回归：无头 QEMU + HMP 驱动鼠标，验证 GL 演示。
 
 流程:
     开机 → 开始菜单 → "3D Demos"（用户态 glview 进程）
     → 截两帧断言动画在跑（画面有变化）且画布非纯背景
     → 点击切到 Gouraud Torus、Wave Grid 各截一帧 → 关窗
-产物: /tmp/zos-gl-*.png
+产物: /tmp/ousia-gl-*.png
 """
 
 import os
@@ -16,9 +16,9 @@ import sys
 import time
 import zlib
 
-ISO = "build/zos.iso"
-MON = "/tmp/zos-gl-mon.sock"
-SER = "/tmp/zos-gl-serial.log"
+ISO = "build/ousia.iso"
+MON = "/tmp/ousia-gl-mon.sock"
+SER = "/tmp/ousia-gl-serial.log"
 QEMU = [
     "qemu-system-x86_64",
     "-cdrom", ISO, "-m", "256M",
@@ -60,9 +60,9 @@ def hmp(cmd, wait=0.3):
 
 def boot():
     global proc
-    subprocess.run(["pkill", "-f", "zos-gl-mon.sock"], check=False)
+    subprocess.run(["pkill", "-f", "ousia-gl-mon.sock"], check=False)
     for _ in range(10):
-        if subprocess.run(["pgrep", "-f", "zos-gl-mon.sock"], capture_output=True).returncode != 0:
+        if subprocess.run(["pgrep", "-f", "ousia-gl-mon.sock"], capture_output=True).returncode != 0:
             break
         time.sleep(0.3)
     try:
@@ -70,7 +70,7 @@ def boot():
     except FileNotFoundError:
         pass
     open(SER, "w").close()
-    errf = open("/tmp/zos-gl-qemu-err.txt", "w")
+    errf = open("/tmp/ousia-gl-qemu-err.txt", "w")
     proc = subprocess.Popen(QEMU, stdout=subprocess.DEVNULL, stderr=errf)
     errf.close()
     deadline = time.time() + 40
@@ -95,10 +95,10 @@ def read_ppm(path):
 
 
 def shot(name):
-    hmp("screendump /tmp/zos-gl-%s.ppm" % name, 0.5)
-    ppm_to_png("/tmp/zos-gl-%s.ppm" % name, "/tmp/zos-gl-%s.png" % name)
+    hmp("screendump /tmp/ousia-gl-%s.ppm" % name, 0.5)
+    ppm_to_png("/tmp/ousia-gl-%s.ppm" % name, "/tmp/ousia-gl-%s.png" % name)
     print("shot:", name)
-    return "/tmp/zos-gl-%s.ppm" % name
+    return "/tmp/ousia-gl-%s.ppm" % name
 
 
 def ppm_to_png(src, dst):
@@ -180,14 +180,14 @@ def main():
     except FileNotFoundError:
         pass
     if not boot():
-        print("[FAIL] GUI 未启动（看 /tmp/zos-gl-serial.log）")
+        print("[FAIL] GUI 未启动（看 /tmp/ousia-gl-serial.log）")
         return 1
     rc = 0
     try:
         shot("0-boot")
 
         # 打开 3D Demos（用户态 glview 进程）
-        click(30, 466)                 # ZOS 按钮
+        click(30, 466)                 # OusiaOS 按钮
         shot("1-menu")
         click(40, MENU_3D_Y)           # "3D Demos"
         time.sleep(1.5)                # spawn + 首帧
@@ -237,7 +237,7 @@ def main():
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
-        subprocess.run(["pkill", "-9", "-f", "zos-gl-mon.sock"], check=False)
+        subprocess.run(["pkill", "-9", "-f", "ousia-gl-mon.sock"], check=False)
 
     if failures:
         print("\n%d 项失败" % len(failures))

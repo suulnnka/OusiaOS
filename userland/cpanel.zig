@@ -1,16 +1,16 @@
 //! cpanel —— Control Panel（用户态 GUI 应用）
 //!
 //! 收尾点缀类应用的样板，同时是"设置持久化"闭环的 UI 端：
-//!   - Display：8 色壁纸色板，单击即改桌面底色（写 /etc/zos.conf）
-//!   - Screen Saver：Off/15/30/60/120 秒单选（写 /etc/zos.conf）
+//!   - Display：8 色壁纸色板，单击即改桌面底色（写 /etc/ousia.conf）
+//!   - Screen Saver：Off/15/30/60/120 秒单选（写 /etc/ousia.conf）
 //!   - Sounds：音量 +/- 与 Test（AC'97 mixer 衰减寄存器；Test 播 ding）
-//!   - 保存 = open(/etc/zos.conf, O_CREAT|O_TRUNC|O_WRONLY) + write
+//!   - 保存 = open(/etc/ousia.conf, O_CREAT|O_TRUNC|O_WRONLY) + write
 //!     ——内核 gui.lateInit 开机读回。0.3 起 / 在 ext2 磁盘上，
 //!     设置天然持久（掉电不丢）
 //!
 //! 布局：左列分区标题 + 右列控件；状态栏显示保存结果。
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 const win = @import("lib/win.zig");
 
 comptime {
@@ -19,7 +19,7 @@ comptime {
 
 const CW = 360;
 const CH = 280;
-const CONF_FILE = "/etc/zos.conf";
+const CONF_FILE = "/etc/ousia.conf";
 
 const wallpaper_colors = [8][3]u8{
     .{ 0x00, 0x80, 0x80 }, // 经典青绿（默认）
@@ -66,13 +66,13 @@ fn inBox(x: i32, y: i32, bx: i32, by: i32, bw: i32, bh: i32) bool {
 // ---- 设置 IO ----
 
 fn saveConf() void {
-    const fd = zos.open(CONF_FILE, win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
+    const fd = ousia.open(CONF_FILE, win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
     if (fd < 0) {
         setStatus("save failed (fs?)");
         win.sound(5);
         return;
     }
-    defer _ = zos.close(@intCast(fd));
+    defer _ = ousia.close(@intCast(fd));
     var buf: [128]u8 = undefined;
     var n: usize = 0;
     const c = wallpaper_colors[wallpaper_sel];
@@ -89,7 +89,7 @@ fn saveConf() void {
     n += put(&buf, n, "volume=");
     n += putNum(buf[n..], @intCast(@max(volume, 0)));
     n += put(&buf, n, "\n");
-    const w = zos.write(@intCast(fd), buf[0..n]);
+    const w = ousia.write(@intCast(fd), buf[0..n]);
     if (w >= 0) {
         setStatus("saved to " ++ CONF_FILE);
         win.sound(4);
@@ -100,11 +100,11 @@ fn saveConf() void {
 }
 
 fn loadConf() void {
-    const fd = zos.open(CONF_FILE, win.O_RDONLY);
+    const fd = ousia.open(CONF_FILE, win.O_RDONLY);
     if (fd < 0) return;
-    defer _ = zos.close(@intCast(fd));
+    defer _ = ousia.close(@intCast(fd));
     var buf: [128]u8 = undefined;
-    const n = zos.read(@intCast(fd), &buf);
+    const n = ousia.read(@intCast(fd), &buf);
     var it = LineIt{ .s = buf[0..@intCast(@max(n, 0))] };
     while (it.next()) |line| {
         const eq = indexOf(line, '=') orelse continue;
@@ -259,9 +259,9 @@ fn press(x: i32, y: i32) void {
 }
 
 fn applyVolume() void {
-    // 立即生效：SYS_zos_volume(508) 直写 AC'97 mixer 衰减寄存器；
+    // 立即生效：SYS_ousia_volume(508) 直写 AC'97 mixer 衰减寄存器；
     // 同时落 conf（volume= 行，内核启动时恢复）——即时与持久各一份
-    _ = zos.syscall1(509, @intCast(volume));
+    _ = ousia.syscall1(509, @intCast(volume));
     saveConf();
 }
 
@@ -325,7 +325,7 @@ fn draw() void {
     win.text(CTL_X + 146 + @as(i32, @intCast(vs.len)) * 8, ROW_Y[2] - 22, "%", win.C_BLACK);
 
     // About 文本（多档字号演示：小字页脚）
-    win.text(SEC_X, ROW_Y[3], "ZOS settings persist in " ++ CONF_FILE, win.C_SHADOW);
+    win.text(SEC_X, ROW_Y[3], "OusiaOS settings persist in " ++ CONF_FILE, win.C_SHADOW);
     win.text(SEC_X, ROW_Y[3] + 14, "(ext2 disk: survives reboot)", win.C_SHADOW);
 
     // 状态栏
@@ -368,7 +368,7 @@ export fn main() i32 {
         const n = win.wait(&evs, 0);
         for (evs[0..n]) |e| {
             switch (e.kind) {
-                win.EV_CLOSE => zos.exit(0),
+                win.EV_CLOSE => ousia.exit(0),
                 win.EV_PRESS => press(e.x, e.y),
                 win.EV_KEY => {},
                 win.EV_RESIZE => { win.onResizeEvent(e); dirty = true; },

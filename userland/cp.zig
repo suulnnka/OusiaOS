@@ -8,7 +8,7 @@
 //!
 //! 与磁盘镜像互拷（guest↔宿主机）走 scripts/disk.sh（debugfs 封装）。
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 
 comptime {
     _ = @import("lib/crt0.zig");
@@ -26,20 +26,20 @@ fn basename(p: []const u8) []const u8 {
 }
 
 export fn main() i32 {
-    if (zos.argc() != 3) {
-        zos.printf("usage: cp <src> <dst>   (dst 为目录时拷入其中)\n", .{});
+    if (ousia.argc() != 3) {
+        ousia.printf("usage: cp <src> <dst>   (dst 为目录时拷入其中)\n", .{});
         return 1;
     }
-    const src = zos.arg(1);
-    var dst = zos.arg(2);
+    const src = ousia.arg(1);
+    var dst = ousia.arg(2);
 
     // dst 是目录 → 拷入该目录，沿用源文件名
-    if (zos.stat(dst)) |st| {
+    if (ousia.stat(dst)) |st| {
         if (st.mode & 0o170000 == 0o040000) {
             var b: [300]u8 = undefined;
             const name = basename(src);
             if (dst.len + 1 + name.len + 1 > b.len) {
-                zos.printf("cp: path too long\n", .{});
+                ousia.printf("cp: path too long\n", .{});
                 return 1;
             }
             @memcpy(b[0..dst.len], dst);
@@ -49,34 +49,34 @@ export fn main() i32 {
         }
     }
 
-    const in_fd = zos.open(src, zos.O_RDONLY);
+    const in_fd = ousia.open(src, ousia.O_RDONLY);
     if (in_fd < 0) {
-        zos.printf("cp: {s}: cannot open ({d})\n", .{ src, in_fd });
+        ousia.printf("cp: {s}: cannot open ({d})\n", .{ src, in_fd });
         return 1;
     }
-    defer _ = zos.close(@intCast(in_fd));
+    defer _ = ousia.close(@intCast(in_fd));
 
     // 权限位跟随源（没有就 0644）
-    const src_st = zos.stat(src);
+    const src_st = ousia.stat(src);
     const mode: u32 = if (src_st) |st| st.mode & 0o7777 else 0o644;
 
-    const out_fd = zos.openMode(dst, zos.O_WRONLY | zos.O_CREAT | zos.O_TRUNC, mode);
+    const out_fd = ousia.openMode(dst, ousia.O_WRONLY | ousia.O_CREAT | ousia.O_TRUNC, mode);
     if (out_fd < 0) {
-        zos.printf("cp: {s}: cannot create ({d})\n", .{ dst, out_fd });
+        ousia.printf("cp: {s}: cannot create ({d})\n", .{ dst, out_fd });
         return 1;
     }
-    defer _ = zos.close(@intCast(out_fd));
+    defer _ = ousia.close(@intCast(out_fd));
 
     while (true) {
-        const n = zos.read(@intCast(in_fd), &buf);
+        const n = ousia.read(@intCast(in_fd), &buf);
         if (n < 0) {
-            zos.printf("cp: {s}: read error ({d})\n", .{ src, n });
+            ousia.printf("cp: {s}: read error ({d})\n", .{ src, n });
             return 1;
         }
         if (n == 0) break;
-        const w = zos.write(@intCast(out_fd), buf[0..@intCast(n)]);
+        const w = ousia.write(@intCast(out_fd), buf[0..@intCast(n)]);
         if (w != n) {
-            zos.printf("cp: {s}: write error ({d})\n", .{ dst, w });
+            ousia.printf("cp: {s}: write error ({d})\n", .{ dst, w });
             return 1;
         }
     }

@@ -1,5 +1,5 @@
 //! 网络栈：以太网 / ARP / IPv4 / ICMP / UDP+DNS / TCP(停等) / HTTP GET
-//!         + TCP 服务器（telnetd/zfile 的底座：监听/握手/收发环/重传）
+//!         + TCP 服务器（telnetd/ofile 的底座：监听/握手/收发环/重传）
 //!
 //! 教学要点：
 //!   - 分层逐字节构造/解析报文（这是理解协议的最短路径）
@@ -842,11 +842,11 @@ fn fmtGet(buf: []u8, host: []const u8, port: u16, path: []const u8) usize {
     w.put(buf, &n, p);
     w.put(buf, &n, " HTTP/1.0\r\nHost: ");
     w.put(buf, &n, host);
-    w.put(buf, &n, "\r\nUser-Agent: zos-curl/0.1\r\n\r\n");
+    w.put(buf, &n, "\r\nUser-Agent: ousia-curl/0.1\r\n\r\n");
     return n;
 }
 
-// ---------------- TCP 服务器（telnetd/zfile 的底座） ----------------
+// ---------------- TCP 服务器（telnetd/ofile 的底座） ----------------
 //
 // 教学要点：被动打开 = "预先登记端口 + 收 SYN 逐半建连接"。每个监听槽
 // 一条连接（同一时刻一个端口一个会话——教学简化）。发送侧是字节环 +

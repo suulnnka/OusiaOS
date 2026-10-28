@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZOS 音频子系统验证：QEMU wav 后端录音 + 波形分析。
+"""OusiaOS 音频子系统验证：QEMU wav 后端录音 + 波形分析。
 
 原理：QEMU 的 wav audiodev 把 guest 播放的 PCM 写进宿主机 wav 文件
 （退出时才完整落盘，故经 monitor 'quit' 干净关机后再分析）。
@@ -20,11 +20,11 @@ import subprocess
 import sys
 import time
 
-WAV = "/tmp/zos-audio.wav"
-MON = "/tmp/zos-audio-mon.sock"
+WAV = "/tmp/ousia-audio.wav"
+MON = "/tmp/ousia-audio-mon.sock"
 QEMU = [
     "qemu-system-x86_64",
-    "-cdrom", "build/zos.iso",
+    "-cdrom", "build/ousia.iso",
     "-m", "256M",
     "-display", "none",
     "-no-reboot",

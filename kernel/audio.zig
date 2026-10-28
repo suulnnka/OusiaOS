@@ -364,7 +364,7 @@ fn stream(s: *Session, timeout_ms: u64) isize {
 var wav_scratch: [512 * 1024]u8 = undefined;
 var pcm_scratch: [128 * 1024]u16 = undefined; // 64K 立体声帧 ≈ 1.4s@48kHz
 
-/// 读文件并播放（sys_zos_wav / shell `play` 命令的底层）。
+/// 读文件并播放（sys_ousia_wav / shell `play` 命令的底层）。
 /// 内核以 root 身份读（uid 0 旁路权限检查）。
 pub fn playWavPath(path: []const u8, cwd: []const u8) isize {
     if (!inited) return -19;

@@ -7,7 +7,7 @@
 
 #include <stddef.h>
 
-typedef struct _zos_file {
+typedef struct _ousia_file {
     int fd;
     int eof;
     int err;

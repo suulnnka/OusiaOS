@@ -1,6 +1,6 @@
-# ZOS —— 用 Zig 编写的 x86_64 教学操作系统内核
+# OusiaOS —— 用 Zig 编写的 x86_64 教学操作系统内核
 
-ZOS 是一个为**操作系统课程教学**设计的迷你内核：从 GRUB 引导、32 位实模式跳板、
+OusiaOS 是一个为**操作系统课程教学**设计的迷你内核：从 GRUB 引导、32 位实模式跳板、
 长模式分页，一路到多进程、系统调用与交互 shell，全部约 4000 行代码，内核与用户
 程序（包括 shell）都用 [Zig](https://ziglang.org) 编写，没有任何第三方依赖。
 
@@ -11,17 +11,17 @@ ZOS 是一个为**操作系统课程教学**设计的迷你内核：从 GRUB 引
 > [用户态与移植](docs/userland.md) · [miniGL 3D 图形](docs/gl.md) · [构建与调试](docs/build-and-debug.md)
 
 ```
-ZOS 0.3.0 -- a tiny teaching kernel in Zig
+OusiaOS 0.3.0 -- a tiny teaching kernel in Zig
 boot: 64-bit long mode OK
 ...
 ext2: 98304 blocks x 1024B, 12 group(s), 24576 inodes (128B each), rev 1, filetype
 boot: root filesystem = ext2 on ATA disk
 boot: init process spawned, entering scheduler
 
-ZOS shell (pid=1) -- type 'help' for commands
+OusiaOS shell (pid=1) -- type 'help' for commands
 
 / $ uname -a
-ZOS zos 0.2.0 ZOS #1 teaching kernel (zig) x86_64
+OusiaOS ousia 0.2.0 OusiaOS #1 teaching kernel (zig) x86_64
 / $ ls /
 etc        <dir>
 dev        <dir>
@@ -43,7 +43,7 @@ forkdemo: parent pid=7, forking...
 # Ubuntu/Debian 安装工具（Zig 从官网下载 0.17.0）
 sudo apt install qemu-system-x86 grub-pc-bin xorriso mtools e2fsprogs
 
-zig build iso        # 编译内核+用户程序 → build/zos.iso（含 build/disk.img ext2 磁盘）
+zig build iso        # 编译内核+用户程序 → build/ousia.iso（含 build/disk.img ext2 磁盘）
 zig build run        # 启动 QEMU（串口即控制台，Ctrl-A X 退出）
 ./scripts/run.sh     # 等价于 zig build run
 ```
@@ -51,7 +51,7 @@ zig build run        # 启动 QEMU（串口即控制台，Ctrl-A X 退出）
 带 VGA 窗口的交互模式（可用键盘输入）：
 
 ```bash
-qemu-system-x86_64 -cdrom build/zos.iso -drive file=build/disk.img,format=raw,if=ide -m 256M
+qemu-system-x86_64 -cdrom build/ousia.iso -drive file=build/disk.img,format=raw,if=ide -m 256M
 ```
 
 无头自动化测试（PTY 驱动串口 shell，逐条执行命令）：
@@ -95,18 +95,18 @@ df                            # 超级块空闲计数
 宿主机可以用 `debugfs -R "ls -l /" build/disk.img` 直接查看、
 `e2fsck -fn` 体检。详见 [docs/fs.md](docs/fs.md)。
 
-### 远程访问（telnet 式 shell + zfile 推拉，明文无认证）
+### 远程访问（telnet 式 shell + ofile 推拉，明文无认证）
 
 `zig build run` 已带端口映射（4321→guest:23、3122→:3122）：
 
 ```bash
-python3 scripts/zterm.py                    # 宿主机远程登录 ZOS shell
-python3 scripts/zcp.py put 文件 /路径        # 宿主 → ZOS（运行中推送）
-python3 scripts/zcp.py get /etc/motd ./m    # ZOS → 宿主
+python3 scripts/oterm.py                    # 宿主机远程登录 OusiaOS shell
+python3 scripts/ocp.py put 文件 /路径        # 宿主 → OusiaOS（运行中推送）
+python3 scripts/ocp.py get /etc/motd ./m    # OusiaOS → 宿主
 ```
 
 内核侧实现见 [docs/network.md](docs/network.md)：TCP 服务器
-（go-back-n 滑动窗口）+ telnetd（行规程 + 会话拉起）+ zfile 协议。
+（go-back-n 滑动窗口）+ telnetd（行规程 + 会话拉起）+ ofile 协议。
 明文无认证——能连上就是 root，教学取舍。
 
 文件互拷（guest ↔ 宿主机）：
@@ -123,7 +123,7 @@ python3 scripts/zcp.py get /etc/motd ./m    # ZOS → 宿主
 
 ISO 引导时 GRUB 会把视频模式设为 VBE 640x480x32，内核随后启动
 GUI 合成器：青绿桌面、可拖拽窗口（点击自动提到顶层、非活动窗口
-灰标题栏）、带 ZOS 按钮/RTC 时钟/窗口按钮的任务栏。点 ZOS 按钮
+灰标题栏）、带 OusiaOS 按钮/RTC 时钟/窗口按钮的任务栏。点 OusiaOS 按钮
 弹开始菜单，内置七个应用（每应用一个源文件，`kernel/apps/`）：
 
 - **File Manager** —— 浏览 tarfs：单击目录进入、`..` 返回、
@@ -138,7 +138,7 @@ GUI 合成器：青绿桌面、可拖拽窗口（点击自动提到顶层、非�
 - **Calculator** —— 计算器：f64 四则、链式运算、退格/取负/CE/C
 - **Minesweeper** —— 经典 9×9/10 雷：左键翻开（首击保护区 +
   空白洪泛）、右键插旗、雷数/笑脸/计时 LED 三件套
-- **About ZOS** —— 版本信息对话框
+- **About OusiaOS** —— 版本信息对话框
 - **3D Demos** —— miniGL 软件三维：纹理棋盘立方体 / Gouraud 光照
   圆环 / 线框波浪地形，点击或左右键切换场景（见下节）
 
@@ -147,7 +147,7 @@ GUI 合成器：青绿桌面、可拖拽窗口（点击自动提到顶层、非�
 画图拖笔画线、扫雷翻格插旗）：
 
 ```bash
-python3 scripts/guishot.py     # 自动开机→菜单→七应用→拖动，存 /tmp/zos-shot-*.png
+python3 scripts/guishot.py     # 自动开机→菜单→七应用→拖动，存 /tmp/ousia-shot-*.png
 ```
 
 详见 [docs/gui.md](docs/gui.md)。
@@ -179,7 +179,7 @@ python3 scripts/glishot.py # 无头视觉回归：GL 窗口两帧差异 + 场景
 |---|---|---|
 | `kernel/boot.S` | 引导 | Multiboot2 头、32 位入口、建页表、开长模式、跳入 64 位 |
 | `kernel/linker.ld` | 链接 | 引导段(VMA==LMA)与内核主体(高端 0xFFFFFFFF80000000)的布局 |
-| `kernel/main.zig` | 总入口 | zos_start：初始化流水线一览 |
+| `kernel/main.zig` | 总入口 | ousia_start：初始化流水线一览 |
 | `kernel/console.zig` | 控制台 | VGA 文本模式、串口镜像、kprintf（comptime 格式化） |
 | `kernel/serial.zig` | UART 16550 | 端口 I/O、轮询发送 |
 | `kernel/gdt.zig` | GDT/TSS | 特权级、段描述符、TSS.rsp0（含两个经典布局陷阱的注释） |
@@ -205,7 +205,7 @@ python3 scripts/glishot.py # 无头视觉回归：GL 窗口两帧差异 + 场景
 | `kernel/font.zig` | **位图字体** | 8x16（scripts/genfont.py 从 PSF 控制台字体生成） |
 | `kernel/audio.zig` | **音频子系统** | AC'97 驱动（NAM/NABM、BDL 描述符环 DMA）、DDS 正弦合成 |
 | `kernel/syscall.zig` | 系统调用 | int 0x80 入口分发、POSIX 子集实现 |
-| `userland/lib/zos.zig` | 系统调用层 | int 0x80 封装、Zig 版 printf、空闲链表 malloc |
+| `userland/lib/ousia.zig` | 系统调用层 | int 0x80 封装、Zig 版 printf、空闲链表 malloc |
 | `userland/lib/libc.zig` | **libc（C ABI）** | string/ctype/stdlib/errno/stdio(FILE)/dirent/qsort 导出 |
 | `userland/lib/clib.c` | **libc（C 部分）** | C va_list 实现的 printf 全家族 + getopt |
 | `userland/lib/crt0.zig` | 启动代码 | _start → main(argc,argv,environ) → exit(atexit) |
@@ -213,7 +213,7 @@ python3 scripts/glishot.py # 无头视觉回归：GL 窗口两帧差异 + 场景
 | `userland/sh.zig` | shell | read→fork→exec→wait 循环、内建命令、`>`/`>>` 重定向 |
 | `userland/*.zig` | Zig 命令 | ls cat echo ps uname sleep hello forkdemo mkdir rm df |
 | `userland/wc.c` `cdemo.c` | **C 程序** | 真 Unix wc 移植 + libc 全家桶演示 |
-| `userland/beep.zig` `music.zig` | **音频命令** | AC'97 蜂鸣 / 欢乐颂旋律（zos_beep 505） |
+| `userland/beep.zig` `music.zig` | **音频命令** | AC'97 蜂鸣 / 欢乐颂旋律（ousia_beep 505） |
 | `userland/lib/gl.zig` | **miniGL 光栅化器** | OpenGL 1.x 子集：矩阵栈/深度/光照/透视校正纹理；宿主机可单测 |
 | `userland/lib/zglabi.zig` `include/zgl.h` | **GL 的 C ABI** | zgl_* 导出，C 程序（glcube.c）同一光栅化器 |
 | `userland/glview.zig` | **3D 演示** | 纹理立方体/Gouraud 圆环/线框地形三场景（用户态 GUI 应用） |
@@ -248,23 +248,23 @@ FFFFFFFF80200000 -               内核主体（文本/数据/bss/内核栈）
 | 35 | nanosleep | 定时器睡眠（调度器阻塞） |
 | 39 | getpid | |
 | 57/59/60/61 | fork/execve/exit/wait4 | 完整进程生命周期 |
-| 63 | uname | "ZOS 0.1.0 x86_64" |
+| 63 | uname | "OusiaOS 0.1.0 x86_64" |
 | 79/80 | getcwd/chdir | 每进程 cwd |
 | 19 | lseek | 文件内随机读 |
 | 32 | dup | 复制 fd |
 | 201 | time | 自开机秒数 |
 | 217 | getdents64 | ls/opendir 的基础 |
-| 500 | zos_psinfo | ZOS 扩展：进程表快照（ps 用） |
-| 501 | zos_ping | ZOS 扩展：ICMP ping（返回 RTT） |
-| 502 | zos_http_get | ZOS 扩展：阻塞式 DNS+TCP+HTTP GET |
-| 503 | zos_net_info | ZOS 扩展：网络配置（ifconfig 用） |
-| 505 | zos_beep | ZOS 扩展：AC'97 正弦蜂鸣（beep/music 用） |
-| 510-514 | win_create/present/poll/wait/color | ZOS 窗口服务：共享表面 + 事件队列（用户态 GUI 应用） |
-| 515 | win_fmt | ZOS 窗口服务：帧缓冲像素格式移位（miniGL 打包像素用） |
+| 500 | ousia_psinfo | OusiaOS 扩展：进程表快照（ps 用） |
+| 501 | ousia_ping | OusiaOS 扩展：ICMP ping（返回 RTT） |
+| 502 | ousia_http_get | OusiaOS 扩展：阻塞式 DNS+TCP+HTTP GET |
+| 503 | ousia_net_info | OusiaOS 扩展：网络配置（ifconfig 用） |
+| 505 | ousia_beep | OusiaOS 扩展：AC'97 正弦蜂鸣（beep/music 用） |
+| 510-514 | win_create/present/poll/wait/color | OusiaOS 窗口服务：共享表面 + 事件队列（用户态 GUI 应用） |
+| 515 | win_fmt | OusiaOS 窗口服务：帧缓冲像素格式移位（miniGL 打包像素用） |
 
 ## 网络栈
 
-ZOS 内置完整的教学网络栈，`ping` 与 `curl` 均可在 QEMU user 网络下真实工作：
+OusiaOS 内置完整的教学网络栈，`ping` 与 `curl` 均可在 QEMU user 网络下真实工作：
 
 ```
 / $ ping 10.0.2.2 3          # QEMU 虚拟网关（= 宿主机回环）
@@ -299,7 +299,7 @@ HTTP/1.1 200 OK ... 577 bytes body
 
 ## libc 与程序移植
 
-ZOS 自带完整的用户态 libc（用 Zig + C 混写），目标是让**标准 C 程序零修改移植**：
+OusiaOS 自带完整的用户态 libc（用 Zig + C 混写），目标是让**标准 C 程序零修改移植**：
 
 - **标准头文件**：`userland/include/` 提供 `stdio.h / stdlib.h / string.h /
   ctype.h / errno.h / unistd.h / fcntl.h / time.h / sys/stat.h / dirent.h /
@@ -325,7 +325,7 @@ ZOS 自带完整的用户态 libc（用 Zig + C 混写），目标是让**标准
 ```bash
 zig cc -target x86_64-freestanding -O1 -nostdlib -no-pie \
       -Iuserland/include -Wl,--script=userland/user.ld -Wl,-e,_start \
-      -o zig-out/bin/user/foo userland/foo.c zig-out/lib/libzos.a
+      -o zig-out/bin/user/foo userland/foo.c zig-out/lib/libousia.a
 ```
 
 `wc.c`（Unix 字数统计工具）与 `cdemo.c`（libc 全家桶自检）就是两个活例子；
@@ -359,24 +359,24 @@ Zig 程序与 C 程序可以互相 fork/exec，共存于同一个 initrd。
   7. LLVM 死存储消除会删掉 export 函数里"经转换指针写入"的循环——mem 三兄弟
      必须 volatile 写入，否则 memset 变成跳回自己的空循环；
   8. std 的默认 panic 打印器在 freestanding 上直接 `@trap` 吞掉错误信息——
-     用户库要自定义完整 panic 命名空间（zos.zig 的 panic struct）；
+     用户库要自定义完整 panic 命名空间（ousia.zig 的 panic struct）；
   9. build.zig 的系统命令若不 addFileInput，**不跟踪源文件变化**——C 程序
      改了源码却在跑旧二进制（本项目真实踩坑，症状是崩溃地址永远不变）。
 
 ## 与 xv6 的对照（适合先学过 xv6 的读者）
 
-| 主题 | xv6 (RISC-V/x86) | ZOS |
+| 主题 | xv6 (RISC-V/x86) | OusiaOS |
 |---|---|---|
 | 语言 | C | Zig（comptime 生成 IDT 桩/格式化） |
 | 引导 | xv6 bootloader / QEMU -kernel | GRUB Multiboot2 + 32 位跳板 |
 | 文件系统 | log FS（可写） | tarfs 内存盘（只读，练习 6 改造） |
 | 系统调用 | syscall/ecall 指令 | int 0x80 软中断（IDT 门 DPL=3） |
-| 用户库 | ulib.c | userland/lib/zos.zig |
+| 用户库 | ulib.c | userland/lib/ousia.zig |
 | shell | sh.c | userland/sh.zig |
 
 ## 练习题（由易到难）
 
-1. **printf 增强**：给 `userland/lib/zos.zig` 的 printf 加 `%08x`、`{c}` 转义支持。
+1. **printf 增强**：给 `userland/lib/ousia.zig` 的 printf 加 `%08x`、`{c}` 转义支持。
 2. **uptime 命令**：新增系统调用读取 `pit.ticks`，写 `/bin/uptime`。
 3. **Ctrl-C 终止前台进程**：tty 已把 Ctrl+C(0x03) 送进缓冲并结束一行；
    给 shell/内核加信号机制终止运行中的子进程（需要"进程组"雏形）。
@@ -404,10 +404,10 @@ Zig 程序与 C 程序可以互相 fork/exec，共存于同一个 initrd。
 
 ```bash
 zig build              # 只编译内核 + 用户程序
-zig build iso          # 制作 build/zos.iso
+zig build iso          # 制作 build/ousia.iso
 zig build run          # 构建并启动 QEMU（无头串口模式）
 zig build test         # 宿主机单测（miniGL 光栅化逐像素断言等）
 zig build test-run     # （等价 python3 scripts/test.py）
-objdump -d zig-out/bin/zos-kernel.elf | less   # 看内核反汇编
+objdump -d zig-out/bin/ousia-kernel.elf | less   # 看内核反汇编
 tar -tf build/initrd.tar                        # 看 initrd 内容
 ```

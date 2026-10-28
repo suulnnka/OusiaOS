@@ -1,6 +1,6 @@
 //! uname —— 系统信息
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 
 comptime {
     _ = @import("lib/crt0.zig");
@@ -8,7 +8,7 @@ comptime {
 
 export fn main() i32 {
     var buf: [6 * 65]u8 = undefined;
-    const r = zos.syscall1(zos.SYS_uname, @intFromPtr(&buf));
+    const r = ousia.syscall1(ousia.SYS_uname, @intFromPtr(&buf));
     if (r < 0) return 1;
 
     const sysname = field(&buf, 0);
@@ -17,10 +17,10 @@ export fn main() i32 {
     const version = field(&buf, 3);
     const machine = field(&buf, 4);
 
-    if (zos.argc() > 1 and zos.eql(zos.arg(1), "-a")) {
-        zos.printf("{s} {s} {s} {s} {s}\n", .{ sysname, nodename, release, version, machine });
+    if (ousia.argc() > 1 and ousia.eql(ousia.arg(1), "-a")) {
+        ousia.printf("{s} {s} {s} {s} {s}\n", .{ sysname, nodename, release, version, machine });
     } else {
-        zos.printf("{s}\n", .{sysname});
+        ousia.printf("{s}\n", .{sysname});
     }
     return 0;
 }

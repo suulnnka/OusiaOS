@@ -1,4 +1,4 @@
-//! About ZOS —— 最小应用范例：静态文字 + 一个按钮
+//! About OusiaOS —— 最小应用范例：静态文字 + 一个按钮
 //!
 //! 从 gui.zig 迁来；演示一个应用需要的全部接口：
 //! paintClient（画客户区）+ onPress（点击）。无状态、无定时器。
@@ -10,7 +10,7 @@ const inRect = gui.inRect;
 
 pub fn paint(w: *const gui.Win) void {
     // 多档字号演示：2x 大标题 + 1x 正文
-    gui.textScaled(w.x + 18, w.y + 30, "ZOS 0.2.0", gui.pal.navy, 2);
+    gui.textScaled(w.x + 18, w.y + 30, "OusiaOS 0.3.0", gui.pal.navy, 2);
     const lines = [_][]const u8{
         "teaching kernel in Zig -- GUI/writable-FS/audio",
         "Compositor: damage-rect repaint, desktop icons",

@@ -1,17 +1,17 @@
 # 系统调用参考
 
-ZOS 的系统调用走 **int 0x80 软中断**，编号与参数约定对齐
+OusiaOS 的系统调用走 **int 0x80 软中断**，编号与参数约定对齐
 **Linux x86_64** 传统 ABI（非 syscall 指令的 ABI）：
 
 | 寄存器 | 角色 |
 |---|---|
 | RAX | 系统调用号（入口）/ 返回值（出口） |
 | RDI / RSI / RDX | 第 1/2/3 参数 |
-| R10 / R8 | 第 4/5 参数（仅 zos_http_get 使用） |
+| R10 / R8 | 第 4/5 参数（仅 ousia_http_get 使用） |
 | 返回值 | 成功 ≥ 0；失败为**负 errno**（如 -2 = ENOENT） |
 
 实现位于 `kernel/syscall.zig`（分发 `handle()`），
-用户态封装位于 `userland/lib/zos.zig`（syscall0/1/3/5 内联汇编）。
+用户态封装位于 `userland/lib/ousia.zig`（syscall0/1/3/5 内联汇编）。
 libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 "返回 -1 并设置全局 `errno`"。
 
@@ -40,7 +40,7 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | 59 | execve | (path, argv) | 替换地址空间；不传 envp |
 | 60 | exit | (code) | 变 zombie，子进程移交 init，唤醒父进程 |
 | 61 | wait4 | (which, status*) | which=-1 任意；收尸取退出码 |
-| 63 | uname | (buf) | "ZOS 0.1.0 x86_64" |
+| 63 | uname | (buf) | "OusiaOS 0.1.0 x86_64" |
 | 79 | getcwd | (buf, size) | 每进程 cwd |
 | 80 | chdir | (path) | 规范化后更新 cwd |
 | 90 | chmod | (path, mode) | 权限位生效（owner/root）；tarfs 改 RAM 副本，ext2 落盘 |
@@ -57,12 +57,12 @@ libc 层（`userland/lib/libc.zig`）把 -errno 转换成 C 惯例
 | 512 | win_poll | (ev*, n) | 非阻塞取事件 |
 | 513 | win_wait | (ev*, n, timeout_ms) | 空队列阻塞；事件/超时唤醒 |
 | 514 | win_color | (r, g, b) | → 帧缓冲格式像素值 |
-| 500 | zos_psinfo | (buf, max) | 进程表快照（ps 用） |
-| 501 | zos_ping | (ip, seq) | ICMP ping，返回 RTT(ms) |
-| 502 | zos_http_get | (host, port, path, out*, out_len) | 阻塞式 DNS+TCP+HTTP GET |
-| 503 | zos_net_info | (buf, len) | 网络配置串（ifconfig 用） |
-| 505 | zos_beep | (freq, ms) | AC'97 正弦单音，阻塞播完（audio 用） |
-| 508 | zos_fsinfo | (buf, len) | ext2 概要串（df 用）；无磁盘 → ENOSYS |
+| 500 | ousia_psinfo | (buf, max) | 进程表快照（ps 用） |
+| 501 | ousia_ping | (ip, seq) | ICMP ping，返回 RTT(ms) |
+| 502 | ousia_http_get | (host, port, path, out*, out_len) | 阻塞式 DNS+TCP+HTTP GET |
+| 503 | ousia_net_info | (buf, len) | 网络配置串（ifconfig 用） |
+| 505 | ousia_beep | (freq, ms) | AC'97 正弦单音，阻塞播完（audio 用） |
+| 508 | ousia_fsinfo | (buf, len) | ext2 概要串（df 用）；无磁盘 → ENOSYS |
 
 ## 2. 分组说明
 
@@ -114,21 +114,21 @@ console（`/dev/console`，vfs 节点 1），fork 继承、execve 保留。
 - **getcwd/chdir**：cwd 存 PCB 内（256 字节缓冲），chdir 先
   normalizePath 再 resolve 校验是目录。
 
-### 2.5 ZOS 扩展（500-503）
+### 2.5 OusiaOS 扩展（500-503）
 
 不与 Linux 编号冲突的自定义调用，网络功能的用户态入口：
 
-- **zos_psinfo(buf, max)**：填 `PsEntry[]`（pid/ppid/state/name[16]），
+- **ousia_psinfo(buf, max)**：填 `PsEntry[]`（pid/ppid/state/name[16]），
   跳过 unused 槽位，返回条数。`ps` 命令用。
-- **zos_ping(ip, seq)**：ip 为**主机序 u32**（首段在最高字节，
+- **ousia_ping(ip, seq)**：ip 为**主机序 u32**（首段在最高字节，
   与 `net.parseIp` 约定一致，README 踩坑 14）；返回 RTT 毫秒，
   失败 -110 ETIMEDOUT / -19 ENODEV / -5 EIO。
-- **zos_http_get(host, port, path, out, out_len)**：第 4/5 参数走
+- **ousia_http_get(host, port, path, out, out_len)**：第 4/5 参数走
   **R10/R8**（不是 SysV 的 RCX/R8——int 0x80 语义下自行约定）。
   阻塞完成 DNS→ARP→TCP→HTTP，响应（含头）拷入 out，返回长度。
-- **zos_net_info(buf, len)**：返回
+- **ousia_net_info(buf, len)**：返回
   `"ip=10.0.2.15 mask=255.255.255.0 gw=10.0.2.2 dns=10.0.2.3\n"`。
-- **zos_beep(freq, ms)**：阻塞播放正弦单音（详见 [audio.md](audio.md)）。
+- **ousia_beep(freq, ms)**：阻塞播放正弦单音（详见 [audio.md](audio.md)）。
   freq 限 20..8000、ms 限 1..10000；返回 -19 无声卡、-11 有播放进行中、
   -22 参数越界。
 
@@ -155,14 +155,14 @@ console（`/dev/console`，vfs 节点 1），fork 继承、execve 保留。
 
 ## 4. 用户态怎么发一个系统调用
 
-Zig（`userland/lib/zos.zig` 已封装好）：
+Zig（`userland/lib/ousia.zig` 已封装好）：
 
 ```zig
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 // 直接走封装：
-const n = zos.read(0, &buf);
+const n = ousia.read(0, &buf);
 // 或裸调（示例：time）：
-const t = zos.syscall1(zos.SYS_time, 0);
+const t = ousia.syscall1(ousia.SYS_time, 0);
 ```
 
 C（经 libc，或直接内联汇编）：
@@ -181,18 +181,18 @@ int 0x80             ; rax = pid
 
 ## 5. 新增一个系统调用的步骤
 
-以"读取开机毫秒数 `zos_uptime`（nr=504）"为例：
+以"读取开机毫秒数 `ousia_uptime`（nr=504）"为例：
 
-1. `kernel/syscall.zig`：定义 `const SYS_zos_uptime = 504;`，
+1. `kernel/syscall.zig`：定义 `const SYS_ousia_uptime = 504;`，
    在 `handle()` 的 switch 里加分支：
    ```zig
-   SYS_zos_uptime => @intCast(@import("pit.zig").uptimeMs()),
+   SYS_ousia_uptime => @intCast(@import("pit.zig").uptimeMs()),
    ```
-2. （可选）`userland/lib/zos.zig` 加封装：
+2. （可选）`userland/lib/ousia.zig` 加封装：
    ```zig
    pub fn uptimeMs() i64 { return syscall1(504, 0); }
    ```
-3. C 程序想用则在程序里 `extern long zos_uptime(void);`
+3. C 程序想用则在程序里 `extern long ousia_uptime(void);`
    并在 libc 里补一个导出（参考 `netPing` 风格）。
 4. 写个用户程序验证，`build.zig` 的 `user_progs` 列表加名字，
    重新 `zig build iso`。
@@ -209,14 +209,14 @@ int 0x80             ; rax = pid
 - read/write 单次上限 64KB；
 - 无 environ；fchmod/fchown 无（chmod/chown/unlink/mkdir/rmdir 已有）。
 
-## 7. ZOS 扩展调用（500 段 + 窗口服务 510 段）
+## 7. OusiaOS 扩展调用（500 段 + 窗口服务 510 段）
 
 | 号 | 语义 |
 |---|---|
-| 505 | zos_beep(freq, ms)：阻塞正弦单音 |
-| 506 | zos_wav(path)：读文件播 WAV（RIFF/PCM，重采样归一到 48k S16） |
-| 507 | zos_sound(kind)：系统音效 0 startup 1 click 2 open 3 close 4 ding 5 error 6 tada |
-| 509 | zos_volume(pct)：AC'97 主音量 0..100 |
+| 505 | ousia_beep(freq, ms)：阻塞正弦单音 |
+| 506 | ousia_wav(path)：读文件播 WAV（RIFF/PCM，重采样归一到 48k S16） |
+| 507 | ousia_sound(kind)：系统音效 0 startup 1 click 2 open 3 close 4 ding 5 error 6 tada |
+| 509 | ousia_volume(pct)：AC'97 主音量 0..100 |
 | 510-515 | win_create/present/poll/wait/color/fmt（窗口服务） |
 | 516/517 | win_clip_set/get：系统剪贴板（1KB 文本） |
 | 518 | win_resize(cw,ch)：重分配表面（最大化/缩放后应用重画） |

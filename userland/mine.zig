@@ -9,7 +9,7 @@
 //!   - 其余与经典版一致：首击保护、空白洪泛、右键插旗、计时 LED
 //!   - 胜利时 tada 音效 + 破纪录 ding + 落盘
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 const win = @import("lib/win.zig");
 
 comptime {
@@ -89,11 +89,11 @@ fn rand() u32 {
 
 fn loadBest() void {
     for (&best) |*b| b.* = -1;
-    const fd = zos.open(BEST_FILE, win.O_RDONLY);
+    const fd = ousia.open(BEST_FILE, win.O_RDONLY);
     if (fd < 0) return;
-    defer _ = zos.close(@intCast(fd));
+    defer _ = ousia.close(@intCast(fd));
     var buf: [128]u8 = undefined;
-    const n = zos.read(@intCast(fd), &buf);
+    const n = ousia.read(@intCast(fd), &buf);
     if (n <= 0) return;
     var li: usize = 0;
     var pos: usize = 0;
@@ -115,9 +115,9 @@ fn loadBest() void {
 }
 
 fn saveBest() void {
-    const fd = zos.open(BEST_FILE, win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
+    const fd = ousia.open(BEST_FILE, win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
     if (fd < 0) return; // 只读 FS / 权限：静默放弃（成绩本次会话仍有效）
-    defer _ = zos.close(@intCast(fd));
+    defer _ = ousia.close(@intCast(fd));
     var buf: [64]u8 = undefined;
     var n: usize = 0;
     for (best) |b| {
@@ -130,7 +130,7 @@ fn saveBest() void {
         buf[n] = '\n';
         n += 1;
     }
-    _ = zos.write(@intCast(fd), buf[0..n]);
+    _ = ousia.write(@intCast(fd), buf[0..n]);
 }
 
 fn putNum(buf: []u8, v: u32) usize {
@@ -195,7 +195,7 @@ fn reset() void {
 }
 
 fn plant(safe: usize) void {
-    rng = @truncate(@as(u64, @bitCast(zos.time())) ^ @as(u64, @intCast(zos.getpid())) << 16 | 1);
+    rng = @truncate(@as(u64, @bitCast(ousia.time())) ^ @as(u64, @intCast(ousia.getpid())) << 16 | 1);
     const sx: i32 = @intCast(safe % nx);
     const sy: i32 = @intCast(safe / nx);
     var placed: usize = 0;
@@ -277,7 +277,7 @@ fn press(x: i32, y: i32, right: bool) void {
     if (state == .ready) {
         plant(idx);
         state = .playing;
-        start_sec = zos.time();
+        start_sec = ousia.time();
     }
     if (c.mine) {
         c.open = true;
@@ -324,7 +324,7 @@ fn press(x: i32, y: i32, right: bool) void {
             if (mc.mine) mc.flag = true;
         }
         flags = mines;
-        const sec: i32 = @intCast(@min(@max(zos.time() - start_sec, 0), 999));
+        const sec: i32 = @intCast(@min(@max(ousia.time() - start_sec, 0), 999));
         // 破纪录判定 + 落盘
         if (best[level] < 0 or sec < best[level]) {
             best[level] = sec;
@@ -345,7 +345,7 @@ fn draw() void {
     menubar.draw(win.sw);
 
     if (state == .playing) {
-        const sec: u32 = @intCast(@min(@max(zos.time() - start_sec, 0), 999));
+        const sec: u32 = @intCast(@min(@max(ousia.time() - start_sec, 0), 999));
         if (sec != shown_sec) shown_sec = sec;
     }
     drawLed(8, LED_Y + MENUBAR_H, @as(i32, @intCast(mines)) - @as(i32, @intCast(flags)));
@@ -515,7 +515,7 @@ export fn main() i32 {
         const n = win.wait(&evs, if (state == .playing) 1000 else 0);
         if (n == 0) {
             if (state == .playing) {
-                const sec: u32 = @intCast(@min(@max(zos.time() - start_sec, 0), 999));
+                const sec: u32 = @intCast(@min(@max(ousia.time() - start_sec, 0), 999));
                 if (sec != shown_sec) {
                     shown_sec = sec;
                     dirty = true;
@@ -525,7 +525,7 @@ export fn main() i32 {
         }
         for (evs[0..n]) |e| {
             switch (e.kind) {
-                win.EV_CLOSE => zos.exit(0),
+                win.EV_CLOSE => ousia.exit(0),
                 win.EV_PRESS => press(e.x, e.y, false),
                 win.EV_RPRESS => press(e.x, e.y, true),
                 win.EV_KEY => {

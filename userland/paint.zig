@@ -10,7 +10,7 @@
 //! 鼠标事件来自 win_wait（捕获语义由内核保证——按住划出窗口也持续
 //! 收到 EV_MOVE），画完把"画布 → 窗口表面"整幅刷新再 present。
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 const win = @import("lib/win.zig");
 
 comptime {
@@ -313,7 +313,7 @@ fn handleMenu() void {
                 win.sound(2);
             },
             1 => {},
-            2 => zos.exit(0),
+            2 => ousia.exit(0),
             else => {},
         },
         1 => switch (menu_item_out.idx) {
@@ -550,7 +550,7 @@ export fn main() i32 {
         const n = win.wait(&evs, 0);
         for (evs[0..n]) |e| {
             switch (e.kind) {
-                win.EV_CLOSE => zos.exit(0),
+                win.EV_CLOSE => ousia.exit(0),
                 win.EV_PRESS => press(e.x, e.y),
                 win.EV_DBL => {
                     if (tool == .polygon) {

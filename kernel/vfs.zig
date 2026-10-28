@@ -4,7 +4,7 @@
 //!   - Unix 的伟大发明："一切皆文件"。read(/dev/console) 与 read(/bin/sh)
 //!     走同一个接口，背后一个是字符设备、一个真磁盘上的 ext2
 //!   - 路径解析 namei：相对路径基于进程 cwd，逐段消解 "." 与 ".."
-//!   - 挂载（mount）：把文件系统的根"嫁接"到名字树上。ZOS 0.3 起
+//!   - 挂载（mount）：把文件系统的根"嫁接"到名字树上。OusiaOS 0.3 起
 //!     ext2 整体作为根文件系统（mountExt2("/")）：/bin /etc 全在盘上；
 //!     无盘时回退 initrd tarfs（保留作教学对照）
 //!   - ext2 是工业格式：mke2fs 可做盘、debugfs/e2fsck 可检查、掉电不丢

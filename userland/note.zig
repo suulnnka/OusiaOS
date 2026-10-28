@@ -14,7 +14,7 @@
 //!
 //! 光标闪烁靠 win_wait 的超时参数：没事件就 500ms 醒一次翻相位。
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 const win = @import("lib/win.zig");
 
 comptime {
@@ -349,11 +349,11 @@ fn key(c: u8) void {
 fn loadFile(p: []const u8) bool {
     var zbuf: [256]u8 = undefined;
     const zp = withNul(&zbuf, p);
-    const fd = zos.open(zp[0..p.len], win.O_RDONLY);
+    const fd = ousia.open(zp[0..p.len], win.O_RDONLY);
     if (fd < 0) return false;
-    defer _ = zos.close(@intCast(fd));
+    defer _ = ousia.close(@intCast(fd));
     var data: [4096]u8 = undefined;
-    const n = zos.read(@intCast(fd), &data);
+    const n = ousia.read(@intCast(fd), &data);
     if (n < 0) return false;
 
     nlines = 1;
@@ -392,7 +392,7 @@ fn saveFile() void {
     if (path_len == 0) setPath("/tmp/untitled.txt");
     var zbuf: [256]u8 = undefined;
     const zp = withNul(&zbuf, filePath());
-    const fd = zos.open(zp[0..path_len], win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
+    const fd = ousia.open(zp[0..path_len], win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
     if (fd < 0) {
         win.sound(5); // error
         return;
@@ -410,8 +410,8 @@ fn saveFile() void {
             n += 1;
         }
     }
-    const w = zos.write(@intCast(fd), buf[0..n]);
-    _ = zos.close(@intCast(fd));
+    const w = ousia.write(@intCast(fd), buf[0..n]);
+    _ = ousia.close(@intCast(fd));
     if (w >= 0) {
         modified = false;
         win.sound(4); // ding = 保存成功
@@ -470,7 +470,7 @@ fn press(x: i32, y: i32, dbl: bool) void {
                     if (path_len > 0) _ = loadFile(filePath());
                 },
                 3 => {},
-                4 => zos.exit(0),
+                4 => ousia.exit(0),
                 else => {},
             }
         } else { // Edit
@@ -602,8 +602,8 @@ export fn main() i32 {
     updateTitle();
 
     // 命令行参数：note <文件>
-    if (zos.argc() >= 2) {
-        const p = zos.arg(1);
+    if (ousia.argc() >= 2) {
+        const p = ousia.arg(1);
         if (p.len > 0) {
             if (!loadFile(p)) {
                 // 不存在：作为保存目标（File Manager "New File" 的路径）
@@ -628,7 +628,7 @@ export fn main() i32 {
         }
         for (evs[0..n]) |e| {
             switch (e.kind) {
-                win.EV_CLOSE => zos.exit(0),
+                win.EV_CLOSE => ousia.exit(0),
                 win.EV_KEY => key(e.code),
                 win.EV_PRESS => press(e.x, e.y, false),
                 win.EV_DBL => press(e.x, e.y, true),

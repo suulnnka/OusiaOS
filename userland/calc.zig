@@ -4,7 +4,7 @@
 //! 内核的陷入/上下文切换都保存 XMM 现场（见 idt.zig / proc.zig），
 //! 这正是"内核态/用户态边界上浮点寄存器归属"的经典教学内容。
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 const win = @import("lib/win.zig");
 
 comptime {
@@ -292,7 +292,7 @@ export fn main() i32 {
         const n = win.wait(&evs, 0);
         for (evs[0..n]) |e| {
             switch (e.kind) {
-                win.EV_CLOSE => zos.exit(0),
+                win.EV_CLOSE => ousia.exit(0),
                 win.EV_PRESS => press(e.x, e.y),
                 win.EV_KEY => pressKey(e.code), // 键盘也能按计算器！
                 else => {},

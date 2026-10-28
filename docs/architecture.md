@@ -1,6 +1,6 @@
 # 总体架构
 
-本文给出 ZOS 的全局图景：模块分层、从加电到 shell 的完整启动流程、
+本文给出 OusiaOS 的全局图景：模块分层、从加电到 shell 的完整启动流程、
 虚拟/物理内存布局，以及几条贯穿全系统的关键控制流。
 各子系统的实现细节见 [kernel.md](kernel.md) 及后续各篇。
 
@@ -12,7 +12,7 @@
 │  wc/cdemo/curl（C 程序，经 libc 移植）                              │
 │  ┌ crt0.zig ─ _start → main → exit ┐                               │
 │  │ libc.zig + clib.c（C ABI：stdio/string/stdlib/dirent/qsort…）│   │
-│  │ zos.zig（syscall 封装 + printf + malloc）                     │   │
+│  │ ousia.zig（syscall 封装 + printf + malloc）                     │   │
 └──────────────────────┬ int $0x80 ──────────────────────────────────┘
                        │ IDT 0x80 号门（DPL=3）
 ┌──────────────────────▼───────────── 内核态 ────────────────────────┐
@@ -42,7 +42,7 @@
 `grub.cfg` 声明两个东西：
 
 ```
-multiboot2 /boot/zos-kernel.elf     ← 按 ELF 加载内核
+multiboot2 /boot/ousia-kernel.elf     ← 按 ELF 加载内核
 module2   /boot/initrd.tar initrd   ← 把 tar 内存盘原样装进物理内存
 ```
 
@@ -66,13 +66,13 @@ GRUB 按 Multiboot2 协议加载后，CPU 处于：**32 位保护模式、未开
    `ljmp $0x08, .Lcode64`。
 5. **进入 Zig**：切到链接脚本定义的 `kernel_stack_top`（高端地址的
    64KB 主内核栈），把 EBX 的物理地址加上 `0xFFFFFFFF80000000` 换算成
-   高端虚拟地址，`call zos_start(magic, mbi_virt)`——从此是 Zig 世界。
+   高端虚拟地址，`call ousia_start(magic, mbi_virt)`——从此是 Zig 世界。
 
 > 引导段 `.boot` 链接在**物理 1MB、VMA==LMA**；内核主体链接在
 > **物理 2MB、虚拟 0xFFFFFFFF80200000**。详见 `kernel/linker.ld`
 > 与 [§3 内存布局](#3-内存布局)。
 
-### 2.3 zos_start：初始化流水线（kernel/main.zig）
+### 2.3 ousia_start：初始化流水线（kernel/main.zig）
 
 ```
 console.init            VGA 清屏 + 串口 115200 8N1
@@ -179,7 +179,7 @@ PML4（每进程一张）
 ```
 用户态                          内核态
 ──────                          ──────
-zos.read(fd, buf)
+ousia.read(fd, buf)
   └ rax=0, rdi=fd, …
     int $0x80 ──────────────►   CPU 查 IDT[0x80]（DPL=3，门合法）
                                   从 TSS.rsp0 取内核栈，压 SS/RSP/RFLAGS/CS/RIP
@@ -260,14 +260,14 @@ caller-saved 寄存器按 ABI 本来就不跨调用存活。"栈就是进程的�
 
 ## 6. 与 xv6 的对照
 
-| 主题 | xv6 | ZOS |
+| 主题 | xv6 | OusiaOS |
 |---|---|---|
 | 语言 | C | Zig（comptime 生成 IDT 桩/printf） |
 | 引导 | 自带 bootloader / -kernel | GRUB Multiboot2 + 32 位跳板 |
 | 页表 | RISC-V SV39 / x86 二级 | x86-64 四级，高半区共享内核页表 |
 | 文件系统 | log FS（可写） | tarfs（只读） |
 | 系统调用 | ecall/syscall 指令 | int 0x80 软中断 |
-| 用户库 | ulib.c | zos.zig + libc（Zig/C 混写，支持 C ABI） |
+| 用户库 | ulib.c | ousia.zig + libc（Zig/C 混写，支持 C ABI） |
 | 网络 | 无 | PCI/e1000/ARP/IP/ICMP/DNS/TCP/HTTP |
 | shell | sh.c | sh.zig（同样 read-fork-exec-wait） |
 

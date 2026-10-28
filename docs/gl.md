@@ -1,6 +1,6 @@
-# miniGL：ZOS 的软件 OpenGL 子集
+# miniGL：OusiaOS 的软件 OpenGL 子集
 
-ZOS 的 3D 图形是**纯软件光栅化器** `userland/lib/gl.zig`（约 1100
+OusiaOS 的 3D 图形是**纯软件光栅化器** `userland/lib/gl.zig`（约 1100
 行 Zig，零第三方依赖、零内核依赖）：实现 OpenGL 1.x 立即模式的一个
 教学子集——矩阵栈、深度测试、Gouraud 光照、背面剔除、透视校正纹理
 采样。它不知道屏幕的存在，只往一块 u32 数组（winsys 的共享表面）里
@@ -10,7 +10,7 @@ ZOS 的 3D 图形是**纯软件光栅化器** `userland/lib/gl.zig`（约 1100
 用户进程（glview.zig / glcube.c）
    │  gl.begin/gl.vertex3f/gl.end ...   纯用户态浮点代码
    ▼
-miniGL（libzos 的一部分，每进程一份 Context）
+miniGL（libousia 的一部分，每进程一份 Context）
    │  变换 → 光照 → 近平面裁剪 → 透视除法 → 视口 → 光栅化
    ▼
 共享表面（win_create 双映射的页帧）──win_present──► 内核合成器 ──► 帧缓冲
@@ -113,7 +113,7 @@ LIGHTING/CULL_FACE/TEXTURE_2D）、`glDepthFunc/glDepthMask`、
 缩放下不严格）、无 alpha 混合、无显示列表/VBO/shader、纹理只 nearest。
 
 **C ABI**：`userland/lib/zglabi.zig` 把同一份 gl.zig 导出成 `zgl_*`
-符号（`userland/include/zgl.h`），C 程序 `glcube.c` 链接 libzos.a 即
+符号（`userland/include/zgl.h`），C 程序 `glcube.c` 链接 libousia.a 即
 可画 3D——与 Zig 版 glview 同一光栅化器。注意 libm 陷阱：`@floor/
 @round` 在无 SSE4.1 的基线 CPU 上会退化成 libm 调用，C 程序链接没有
 compiler_rt 兜底——所以 gl.zig 里 floor/round/sin/cos 全部自实现。

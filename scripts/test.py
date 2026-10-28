@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZOS 自动化测试：用 PTY 驱动 QEMU 串口 shell。
+"""OusiaOS 自动化测试：用 PTY 驱动 QEMU 串口 shell。
 
 用法: python3 scripts/test.py [命令行数...]
 
@@ -18,11 +18,11 @@ import time
 
 QEMU_CMD = [
     "qemu-system-x86_64",
-    "-cdrom", "build/zos.iso",
+    "-cdrom", "build/ousia.iso",
     "-m", "256M",
     "-display", "none",
     "-no-reboot",
-    # 远程服务端口映射：4321→guest:23（telnet shell），3122→:3122（zfile）
+    # 远程服务端口映射：4321→guest:23（telnet shell），3122→:3122（ofile）
     "-netdev", "user,id=n0,hostfwd=tcp::4321-:23,hostfwd=tcp::3122-:3122",
     "-device", "e1000,netdev=n0",
     # 声卡在场（无音频后端，静音）——回归顺便覆盖 audio.init 路径
@@ -39,7 +39,7 @@ def prepare_disk() -> str:
     src = "build/disk.img"
     if not os.path.exists(src):
         sys.exit("[FAIL] 缺少 build/disk.img —— 先跑 zig build iso（mkiso.sh 会调 mkdisk.sh）")
-    fd, path = tempfile.mkstemp(prefix="zos_disk_", suffix=".img")
+    fd, path = tempfile.mkstemp(prefix="ousia_disk_", suffix=".img")
     os.close(fd)
     shutil.copyfile(src, path)
     return path
@@ -48,9 +48,9 @@ def prepare_disk() -> str:
 def start_fixture_httpd():
     """起一个桩 HTTP 服务器（宿主机 8099 = guest 眼中的 10.0.2.2:8099）"""
     import http.server, socketserver, tempfile, threading
-    d = tempfile.mkdtemp(prefix="zos_www_")
+    d = tempfile.mkdtemp(prefix="ousia_www_")
     with open(d + "/hello.txt", "w") as f:
-        f.write("hello from host httpd - ZOS networking works!\n")
+        f.write("hello from host httpd - OusiaOS networking works!\n")
     handler = http.server.SimpleHTTPRequestHandler
     class Quiet(handler):
         def log_message(self, *a): pass
@@ -65,7 +65,7 @@ def start_fixture_httpd():
 
 
 def remote_phase(master):
-    """远程服务验证：telnet shell（:4321→23）+ zfile 推拉（:3122）。
+    """远程服务验证：telnet shell（:4321→23）+ ofile 推拉（:3122）。
 
     注意：这里用独立的串口读取缓冲（不复用外层累积缓冲——里面的旧
     "$ " 会造成假匹配，测试抢在命令执行前跑完，全绿假象）。
@@ -98,8 +98,8 @@ def remote_phase(master):
         time.sleep(0.2)
         return acc
 
-    def zcp(*args):
-        return subprocess.run([sys.executable, "scripts/zcp.py", *args],
+    def ocp(*args):
+        return subprocess.run([sys.executable, "scripts/ocp.py", *args],
                               capture_output=True, text=True, timeout=60)
 
     # ---- 1) 远程 shell：提示符 / 回显 / 退格行编辑 / 读盘 ----
@@ -127,12 +127,12 @@ def remote_phase(master):
         s.sendall(b"echo remote-shell-works\n")
         if not until(b"remote-shell-works"):
             fail("远程 echo 未回显")
-        # 退格：abc + BS + def → echo abdef（行编辑在 ZOS 侧完成）
+        # 退格：abc + BS + def → echo abdef（行编辑在 OusiaOS 侧完成）
         s.sendall(b"echo abc\x7fdef\n")
         if not until(b"abdef"):
             fail("远程退格行编辑未生效")
         s.sendall(b"cat /etc/issue\n")
-        if not until(b"ZOS"):
+        if not until(b"OusiaOS"):
             fail("远程 cat 未读到 /etc/issue")
         s.sendall(b"exit\n")
         until(b"[connection closed]", 10)
@@ -140,32 +140,32 @@ def remote_phase(master):
     except OSError as e:
         fail(f"远程 shell 连接失败: {e}")
 
-    # ---- 2) zfile push：宿主 → ZOS 落盘，串口 cat 验证内容 ----
-    payload = b"hello-from-zcp\n" + (b"zos-payload-line\n" * 12)
+    # ---- 2) ofile push：宿主 → OusiaOS 落盘，串口 cat 验证内容 ----
+    payload = b"hello-from-ocp\n" + (b"ousia-payload-line\n" * 12)
     with open("/tmp/znet-up.txt", "wb") as f:
         f.write(payload)
-    r = zcp("put", "/tmp/znet-up.txt", "/net-up.txt")
+    r = ocp("put", "/tmp/znet-up.txt", "/net-up.txt")
     if r.returncode != 0:
-        fail(f"zcp put 失败: {r.stdout}{r.stderr}")
+        fail(f"ocp put 失败: {r.stdout}{r.stderr}")
     else:
         out = ser("cat /net-up.txt")
-        if b"hello-from-zcp" in out and b"zos-payload-line" in out:
-            print("[OK] zfile put 内容经串口核对一致")
+        if b"hello-from-ocp" in out and b"ousia-payload-line" in out:
+            print("[OK] ofile put 内容经串口核对一致")
         else:
-            fail("zfile put 内容不一致（串口 cat）")
+            fail("ofile put 内容不一致（串口 cat）")
 
-    # ---- 3) zfile pull：串口 cp → 宿主 get → 逐字节比对 ----
+    # ---- 3) ofile pull：串口 cp → 宿主 get → 逐字节比对 ----
     ser("cp /etc/motd /net-dl.txt")
-    r = zcp("get", "/net-dl.txt", "/tmp/znet-dl.txt")
+    r = ocp("get", "/net-dl.txt", "/tmp/znet-dl.txt")
     if r.returncode != 0:
-        fail(f"zcp get 失败: {r.stdout}{r.stderr}")
+        fail(f"ocp get 失败: {r.stdout}{r.stderr}")
     else:
         want = open("rootfs/etc/motd", "rb").read()
         got = open("/tmp/znet-dl.txt", "rb").read()
         if got == want:
-            print("[OK] zfile get 与磁盘内容逐字节一致")
+            print("[OK] ofile get 与磁盘内容逐字节一致")
         else:
-            fail(f"zfile get 内容不一致 ({len(got)} vs {len(want)})")
+            fail(f"ofile get 内容不一致 ({len(got)} vs {len(want)})")
 
     ser("rm /net-up.txt /net-dl.txt")
     return ok

@@ -1,8 +1,8 @@
-//! ZOS —— 用 Zig 编写的 x86_64 教学操作系统内核
+//! OusiaOS —— 用 Zig 编写的 x86_64 教学操作系统内核
 //!
-//! 这是内核主入口（zos_start），由 boot.S 在开启长模式后调用。
+//! 这是内核主入口（ousia_start），由 boot.S 在开启长模式后调用。
 //! 启动流程：
-//!   GRUB → boot.S(32位入口→页表→长模式) → zos_start()
+//!   GRUB → boot.S(32位入口→页表→长模式) → ousia_start()
 //!          → 控制台 → multiboot 信息 → GDT/TSS → IDT → PIC → PIT
 //!          → (内存管理 → 文件系统 → 进程/调度 → 用户态 init/shell)
 
@@ -32,13 +32,13 @@ fn kernPanic(msg: []const u8, ret_addr: ?usize) noreturn {
 pub const panic = std.debug.FullPanic(kernPanic);
 
 /// 内核入口（C 调用约定：rdi=magic, rsi=boot_info 高端虚拟地址）
-export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
+export fn ousia_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
     // 在第一次触碰屏幕【之前】探测 VBE 帧缓冲：图形模式下 0xB8000
     // 不再是文本屏，console 必须从一开始就知道要不要走 VGA 文本路径
     const gui_mode = multiboot.sniffFramebuffer(mbi_virt);
     console.init(gui_mode);
 
-    console.kprintf("\nZOS 0.3.0 -- a tiny teaching kernel in Zig\n", .{});
+    console.kprintf("\nOusiaOS 0.3.0 -- a tiny teaching kernel in Zig\n", .{});
     console.kprintf("boot: 64-bit long mode OK\n", .{});
 
     if (magic != multiboot.MB2_BOOTLOADER_MAGIC) {
@@ -146,11 +146,11 @@ export fn zos_start(magic: u32, mbi_virt: usize) callconv(.c) noreturn {
         console.kprintf("boot: continue without filesystem\n", .{});
     }
 
-    // GUI 的"晚初始化"：读 /etc/zos.conf 壁纸/屏保设置 + 开机音
+    // GUI 的"晚初始化"：读 /etc/ousia.conf 壁纸/屏保设置 + 开机音
     // （WAV/ramfs 都依赖上面的文件系统就绪）
     @import("gui.zig").lateInit();
 
-    // ---- 远程服务：telnet 式 shell(:23) + zfile 文件推拉(:3122) ----
+    // ---- 远程服务：telnet 式 shell(:23) + ofile 文件推拉(:3122) ----
     // 依赖 net（IRQ 收包）与 vfs（拉起 /bin/sh、文件读写），之后每拍
     // 由 pit.srv_hook 驱动发送/收割。宿主机用 -hostfwd 映射进来。
     @import("telnetd.zig").init();

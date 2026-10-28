@@ -1,6 +1,6 @@
-//! ZOS 用户态库：系统调用封装 + 常用函数（printf/malloc/字符串）
+//! OusiaOS 用户态库：系统调用封装 + 常用函数（printf/malloc/字符串）
 //!
-//! 用户程序统一 `const zos = @import("lib/zos.zig");`
+//! 用户程序统一 `const ousia = @import("lib/ousia.zig");`
 //! 并在文件末尾 `comptime { _ = @import("lib/crt0.zig"); }` 拉入 _start。
 
 const std = @import("std");
@@ -126,9 +126,9 @@ pub const SYS_setgid = 106;
 pub const SYS_mkdir = 83;
 pub const SYS_rmdir = 84;
 pub const SYS_unlink = 87;
-pub const SYS_zos_wav = 506;
-pub const SYS_zos_sound = 507;
-pub const SYS_zos_fsinfo = 508;
+pub const SYS_ousia_wav = 506;
+pub const SYS_ousia_sound = 507;
+pub const SYS_ousia_fsinfo = 508;
 
 // ---------------- POSIX 风格 API ----------------
 
@@ -172,7 +172,7 @@ pub fn dup2(oldfd: i32, newfd: i32) isize {
 
 /// fsinfo(buf)：文件系统概要一行（df 命令用），返回字节数；<0 = 无磁盘
 pub fn fsinfo(buf: []u8) isize {
-    return syscall2(SYS_zos_fsinfo, @intFromPtr(buf.ptr), buf.len);
+    return syscall2(SYS_ousia_fsinfo, @intFromPtr(buf.ptr), buf.len);
 }
 
 /// mkdir(path, perm)：创建目录（练习 5 的可写文件系统）
@@ -200,7 +200,7 @@ pub fn unlink(path: []const u8) isize {
 pub fn playWav(path: []const u8) isize {
     var zbuf: [256]u8 = undefined;
     const p = withNul(&zbuf, path);
-    return syscall1(SYS_zos_wav, @intFromPtr(p.ptr));
+    return syscall1(SYS_ousia_wav, @intFromPtr(p.ptr));
 }
 
 pub fn close(fd: i32) isize {

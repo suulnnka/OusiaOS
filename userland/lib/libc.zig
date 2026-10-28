@@ -1,6 +1,6 @@
-//! ZOS libc —— C ABI 兼容层
+//! OusiaOS libc —— C ABI 兼容层
 //!
-//! 目标：让普通 C 程序（`zig cc -nostdlib` 编译）几乎零修改移植到 ZOS：
+//! 目标：让普通 C 程序（`zig cc -nostdlib` 编译）几乎零修改移植到 OusiaOS：
 //!   - 导出 string.h / ctype.h / stdlib.h / errno.h / unistd.h / stdio.h /
 //!     dirent.h / sys/stat.h / time.h 的标准符号
 //!   - 语义遵循 C/POSIX 惯例：失败返回 -1 并设置 errno（内核层是 -errno）
@@ -12,11 +12,11 @@
 //! 重复定义反而会导致链接冲突。
 
 const std = @import("std");
-const zos = @import("zos.zig");
+const ousia = @import("ousia.zig");
 
-// 作为静态库的根模块：panic 走 zos.zig 的自定义处理器
+// 作为静态库的根模块：panic 走 ousia.zig 的自定义处理器
 // （std 默认 panic 打印器在裸机上自身会崩，吞掉真实错误信息）
-pub const panic = zos.panic;
+pub const panic = ousia.panic;
 
 // miniGL 的 C ABI（zgl.h）：comptime 引用强制分析整个文件——
 // 否则 export fn 会被惰性分析跳过，静态库里没有这些符号
@@ -94,7 +94,7 @@ fn fmtDec(v: c_int, buf: []u8) usize {
 // ================= string.h =================
 
 export fn strlen(s: [*:0]const u8) usize {
-    return zos.strlenZ(s);
+    return ousia.strlenZ(s);
 }
 
 export fn strcmp(a: [*:0]const u8, b: [*:0]const u8) c_int {
@@ -165,7 +165,7 @@ export fn strrchr(s: [*:0]const u8, c: c_int) ?[*:0]const u8 {
 }
 
 export fn strstr(hay: [*:0]const u8, needle: [*:0]const u8) ?[*:0]const u8 {
-    const nlen = zos.strlenZ(needle);
+    const nlen = ousia.strlenZ(needle);
     if (nlen == 0) return hay;
     var i: usize = 0;
     while (hay[i] != 0) : (i += 1) {
@@ -177,8 +177,8 @@ export fn strstr(hay: [*:0]const u8, needle: [*:0]const u8) ?[*:0]const u8 {
 }
 
 export fn strdup(s: [*:0]const u8) ?[*:0]u8 {
-    const len = zos.strlenZ(s);
-    const p = zos.malloc(len + 1) orelse return null;
+    const len = ousia.strlenZ(s);
+    const p = ousia.malloc(len + 1) orelse return null;
     @memcpy(p[0 .. len + 1], @as([*]const u8, @ptrCast(s))[0 .. len + 1]);
     return @ptrCast(p);
 }
@@ -348,7 +348,7 @@ export fn labs(x: c_long) c_long {
 }
 
 export fn malloc(n: usize) ?*anyopaque {
-    const p = zos.malloc(n) orelse {
+    const p = ousia.malloc(n) orelse {
         errno = 12;
         return null;
     };
@@ -356,7 +356,7 @@ export fn malloc(n: usize) ?*anyopaque {
 }
 
 export fn calloc(n: usize, sz: usize) ?*anyopaque {
-    const p = zos.calloc(n, sz) orelse {
+    const p = ousia.calloc(n, sz) orelse {
         errno = 12;
         return null;
     };
@@ -365,7 +365,7 @@ export fn calloc(n: usize, sz: usize) ?*anyopaque {
 
 export fn realloc(old: ?*anyopaque, n: usize) ?*anyopaque {
     if (old == null) return malloc(n);
-    const p = zos.realloc(old.?, n) orelse {
+    const p = ousia.realloc(old.?, n) orelse {
         errno = 12;
         return null;
     };
@@ -373,7 +373,7 @@ export fn realloc(old: ?*anyopaque, n: usize) ?*anyopaque {
 }
 
 export fn free(p: ?*anyopaque) void {
-    if (p != null) zos.free(p.?);
+    if (p != null) ousia.free(p.?);
 }
 
 /// 快速排序（教学实现：Lomuto 分区 + 尾递归优化右半）
@@ -450,7 +450,7 @@ export fn exit(code: c_int) noreturn {
         atexit_count -= 1;
         atexit_fns[atexit_count]();
     }
-    _ = zos.syscall1(zos.SYS_exit, @as(usize, @as(u32, @bitCast(code))));
+    _ = ousia.syscall1(ousia.SYS_exit, @as(usize, @as(u32, @bitCast(code))));
     unreachable;
 }
 
@@ -459,13 +459,13 @@ export fn _exit(code: c_int) noreturn {
 }
 
 export fn abort() noreturn {
-    _ = zos.write(2, "abort() called\n");
+    _ = ousia.write(2, "abort() called\n");
     exit(134);
 }
 
-export fn __zos_assert_fail(expr: [*:0]const u8, file: [*:0]const u8, line: c_int) noreturn {
-    _ = zos.printf("Assertion failed: {s} ({s}:{d})\n", .{
-        expr[0..zos.strlenZ(expr)], file[0..zos.strlenZ(file)], line,
+export fn __ousia_assert_fail(expr: [*:0]const u8, file: [*:0]const u8, line: c_int) noreturn {
+    _ = ousia.printf("Assertion failed: {s} ({s}:{d})\n", .{
+        expr[0..ousia.strlenZ(expr)], file[0..ousia.strlenZ(file)], line,
     });
     abort();
 }
@@ -482,49 +482,49 @@ export fn getenv(name: [*:0]const u8) ?[*:0]const u8 {
 // ================= unistd.h =================
 
 export fn read(fd: c_int, buf: ?*anyopaque, count: usize) isize {
-    return check(zos.syscall3(zos.SYS_read, @intCast(fd), @intFromPtr(buf), count));
+    return check(ousia.syscall3(ousia.SYS_read, @intCast(fd), @intFromPtr(buf), count));
 }
 
 export fn write(fd: c_int, buf: ?*const anyopaque, count: usize) isize {
-    return check(zos.syscall3(zos.SYS_write, @intCast(fd), @intFromPtr(buf), count));
+    return check(ousia.syscall3(ousia.SYS_write, @intCast(fd), @intFromPtr(buf), count));
 }
 
 /// 注意：C 侧 <fcntl.h> 把 open 声明为变参 open(path, flags, ...mode)；
 /// SysV ABI 下被调函数忽略多余实参，这里按两参数定义即可。
 export fn open(path: [*:0]const u8, flags: c_int) isize {
-    return check(zos.syscall3(zos.SYS_open, @intFromPtr(path), @as(usize, @as(u32, @bitCast(flags))), 0));
+    return check(ousia.syscall3(ousia.SYS_open, @intFromPtr(path), @as(usize, @as(u32, @bitCast(flags))), 0));
 }
 
 export fn close(fd: c_int) isize {
-    return check(zos.syscall1(zos.SYS_close, @intCast(fd)));
+    return check(ousia.syscall1(ousia.SYS_close, @intCast(fd)));
 }
 
 export fn lseek(fd: c_int, off: c_long, whence: c_int) c_long {
-    return @intCast(check(zos.syscall3(zos.SYS_lseek, @intCast(fd), @bitCast(off), @intCast(whence))));
+    return @intCast(check(ousia.syscall3(ousia.SYS_lseek, @intCast(fd), @bitCast(off), @intCast(whence))));
 }
 
 export fn dup(fd: c_int) isize {
-    return check(zos.syscall1(zos.SYS_dup, @intCast(fd)));
+    return check(ousia.syscall1(ousia.SYS_dup, @intCast(fd)));
 }
 
 export fn isatty(fd: c_int) c_int {
-    const r = zos.syscall3(zos.SYS_ioctl, @intCast(fd), 0x5401, 0);
+    const r = ousia.syscall3(ousia.SYS_ioctl, @intCast(fd), 0x5401, 0);
     if (r == 0) return 1;
     errno = 25;
     return 0;
 }
 
 export fn getpid() c_int {
-    return @intCast(zos.getpid());
+    return @intCast(ousia.getpid());
 }
 
 export fn fork() c_int {
-    return @intCast(zos.fork());
+    return @intCast(ousia.fork());
 }
 
 export fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: ?*anyopaque) c_int {
     _ = envp;
-    const r = zos.syscall3(zos.SYS_execve, @intFromPtr(path), @intFromPtr(argv), 0);
+    const r = ousia.syscall3(ousia.SYS_execve, @intFromPtr(path), @intFromPtr(argv), 0);
     if (r < 0) {
         errno = @intCast(-r);
         return -1;
@@ -534,21 +534,21 @@ export fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: 
 
 export fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int {
     _ = options;
-    return @intCast(zos.syscall3(zos.SYS_wait4, @intCast(pid), @intFromPtr(status), 0));
+    return @intCast(ousia.syscall3(ousia.SYS_wait4, @intCast(pid), @intFromPtr(status), 0));
 }
 
 export fn sleep(seconds: c_uint) c_uint {
-    zos.sleepMs(@as(u64, seconds) * 1000);
+    ousia.sleepMs(@as(u64, seconds) * 1000);
     return 0;
 }
 
 export fn usleep(usec: c_uint) c_int {
-    zos.sleepMs((usec + 999) / 1000);
+    ousia.sleepMs((usec + 999) / 1000);
     return 0;
 }
 
 export fn chdir(path: [*:0]const u8) c_int {
-    const r = zos.syscall1(zos.SYS_chdir, @intFromPtr(path));
+    const r = ousia.syscall1(ousia.SYS_chdir, @intFromPtr(path));
     if (r < 0) {
         errno = @intCast(-r);
         return -1;
@@ -557,7 +557,7 @@ export fn chdir(path: [*:0]const u8) c_int {
 }
 
 export fn getcwd(buf: [*:0]u8, size: usize) ?[*:0]u8 {
-    const r = zos.syscall3(zos.SYS_getcwd, @intFromPtr(buf), size, 0);
+    const r = ousia.syscall3(ousia.SYS_getcwd, @intFromPtr(buf), size, 0);
     if (r < 0) {
         errno = @intCast(-r);
         return null;
@@ -568,7 +568,7 @@ export fn getcwd(buf: [*:0]u8, size: usize) ?[*:0]u8 {
 // ================= fcntl.h / sys/stat.h =================
 
 export fn fstat(fd: c_int, buf: ?*anyopaque) c_int {
-    const r = zos.syscall3(zos.SYS_fstat, @intCast(fd), @intFromPtr(buf), 0);
+    const r = ousia.syscall3(ousia.SYS_fstat, @intCast(fd), @intFromPtr(buf), 0);
     if (r < 0) {
         errno = @intCast(-r);
         return -1;
@@ -588,7 +588,7 @@ export fn stat(path: [*:0]const u8, buf: ?*anyopaque) c_int {
 // ================= time.h =================
 
 export fn time(t: ?*c_long) c_long {
-    const sec: c_long = @intCast(zos.time());
+    const sec: c_long = @intCast(ousia.time());
     if (t != null) t.?.* = sec;
     return sec;
 }
@@ -627,7 +627,7 @@ export fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*FILE {
     }
     const fd = open(path, flags);
     if (fd < 0) return null;
-    const f: *FILE = @ptrCast(@alignCast(zos.malloc(@sizeOf(FILE)) orelse {
+    const f: *FILE = @ptrCast(@alignCast(ousia.malloc(@sizeOf(FILE)) orelse {
         _ = close(@intCast(fd));
         return null;
     }));
@@ -641,7 +641,7 @@ export fn fclose(f: ?*FILE) c_int {
         return -1;
     }
     const r = close(f.?.fd);
-    zos.free(f.?);
+    ousia.free(f.?);
     return @intCast(r);
 }
 
@@ -696,7 +696,7 @@ export fn putchar(c: c_int) c_int {
 
 export fn fputs(s: [*:0]const u8, f: ?*FILE) c_int {
     if (f == null) return -1;
-    const r = write(f.?.fd, s, zos.strlenZ(s));
+    const r = write(f.?.fd, s, ousia.strlenZ(s));
     return if (r >= 0) 0 else -1;
 }
 
@@ -752,21 +752,21 @@ export fn ftell(f: ?*FILE) c_long {
 
 export fn perror(s: [*:0]const u8) void {
     const msg: [*:0]const u8 = strerror(errno);
-    _ = zos.printf("{s}: {s}\n", .{ s[0..zos.strlenZ(s)], msg[0..zos.strlenZ(msg)] });
+    _ = ousia.printf("{s}: {s}\n", .{ s[0..ousia.strlenZ(s)], msg[0..ousia.strlenZ(msg)] });
 }
 
-// ================= ZOS 网络扩展（C 侧包装）=================
+// ================= OusiaOS 网络扩展（C 侧包装）=================
 
-export fn zos_ping(ip: u32, seq: c_int) isize {
-    return zos.netPing(ip, @intCast(seq));
+export fn ousia_ping(ip: u32, seq: c_int) isize {
+    return ousia.netPing(ip, @intCast(seq));
 }
 
-export fn zos_http_get(host: [*:0]const u8, port: c_int, path: [*:0]const u8, buf: [*]u8, len: usize) isize {
-    return zos.syscall5(502, @intFromPtr(host), @as(usize, @bitCast(@as(isize, port))), @intFromPtr(path), @intFromPtr(buf), len);
+export fn ousia_http_get(host: [*:0]const u8, port: c_int, path: [*:0]const u8, buf: [*]u8, len: usize) isize {
+    return ousia.syscall5(502, @intFromPtr(host), @as(usize, @bitCast(@as(isize, port))), @intFromPtr(path), @intFromPtr(buf), len);
 }
 
-export fn zos_net_info(buf: [*]u8, len: usize) isize {
-    return zos.syscall3(503, @intFromPtr(buf), len, 0);
+export fn ousia_net_info(buf: [*]u8, len: usize) isize {
+    return ousia.syscall3(503, @intFromPtr(buf), len, 0);
 }
 
 // ================= dirent.h =================
@@ -790,7 +790,7 @@ pub const DIR = extern struct {
 export fn opendir(path: [*:0]const u8) ?*DIR {
     const fd = open(path, 0o200000); // O_DIRECTORY
     if (fd < 0) return null;
-    const d: *DIR = @ptrCast(@alignCast(zos.malloc(@sizeOf(DIR)) orelse {
+    const d: *DIR = @ptrCast(@alignCast(ousia.malloc(@sizeOf(DIR)) orelse {
         _ = close(@intCast(fd));
         return null;
     }));
@@ -802,7 +802,7 @@ export fn readdir(d: ?*DIR) ?*Dirent {
     if (d == null) return null;
     const dir = d.?;
     if (dir.pos >= dir.len) {
-        const r = check(zos.syscall3(zos.SYS_getdents64, @intCast(@as(u32, @bitCast(dir.fd))), @intFromPtr(&dir.buf), dir.buf.len));
+        const r = check(ousia.syscall3(ousia.SYS_getdents64, @intCast(@as(u32, @bitCast(dir.fd))), @intFromPtr(&dir.buf), dir.buf.len));
         if (r <= 0) return null;
         dir.len = @intCast(r);
         dir.pos = 0;
@@ -827,7 +827,7 @@ export fn readdir(d: ?*DIR) ?*Dirent {
 export fn closedir(d: ?*DIR) c_int {
     if (d == null) return -1;
     const r = close(d.?.fd);
-    zos.free(d.?);
+    ousia.free(d.?);
     return @intCast(r);
 }
 

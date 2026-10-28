@@ -1,6 +1,6 @@
 //! echo —— 输出参数
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 
 comptime {
     _ = @import("lib/crt0.zig");
@@ -8,11 +8,11 @@ comptime {
 
 export fn main() i32 {
     var first = true;
-    for (1..zos.argc()) |i| {
-        if (!first) _ = zos.write(1, " ");
-        _ = zos.write(1, zos.arg(i));
+    for (1..ousia.argc()) |i| {
+        if (!first) _ = ousia.write(1, " ");
+        _ = ousia.write(1, ousia.arg(i));
         first = false;
     }
-    _ = zos.write(1, "\n");
+    _ = ousia.write(1, "\n");
     return 0;
 }

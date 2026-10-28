@@ -11,7 +11,7 @@
  *   2. 保存 GRUB 传入的信息
  *   3. 建立引导页表（恒等映射 + 高端映射，2MB 大页）
  *   4. 开启 PAE → 长模式（EFER.LME）→ 分页（CR0.PG）
- *   5. 远跳进入 64 位模式，切换到内核栈，跳入 Zig 内核入口 zos_start()
+ *   5. 远跳进入 64 位模式，切换到内核栈，跳入 Zig 内核入口 ousia_start()
  */
 
 .set MB2_HDR_MAGIC,   0xE85250D6
@@ -77,7 +77,7 @@ boot_stack_top:
 .section .boot.text, "ax"
 .code32
 
-.extern zos_start                       /* Zig 内核入口（高地址）  */
+.extern ousia_start                       /* Zig 内核入口（高地址）  */
 .extern kernel_stack_top                /* 链接脚本定义的内核主栈  */
 
 .global _start
@@ -186,13 +186,13 @@ _start:
     /* 切换到内核主栈（高端地址） */
     movabsq $kernel_stack_top, %rsp
 
-    /* 准备 zos_start(magic, boot_info_virt) 参数（SysV: rdi, rsi）*/
+    /* 准备 ousia_start(magic, boot_info_virt) 参数（SysV: rdi, rsi）*/
     movl   mb2_magic_saved, %edi        /* movl 写 edi 自动零扩展   */
     movl   mb2_info_saved, %esi
     movabsq $0xFFFFFFFF80000000, %r8
     addq   %r8, %rsi                    /* 物理地址 → 高端虚拟地址  */
 
-    movabsq $zos_start, %rax
+    movabsq $ousia_start, %rax
     call   *%rax                        /* 进入 Zig 世界，不再返回  */
 
 1:  hlt

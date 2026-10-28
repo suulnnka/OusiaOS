@@ -1,4 +1,4 @@
-//! ZOS 图形子系统：合成器（compositor）+ Win3.1 风格桌面/任务栏/窗口管理
+//! OusiaOS 图形子系统：合成器（compositor）+ Win3.1 风格桌面/任务栏/窗口管理
 //!
 //! 教学要点：
 //!   - 图形模式由 GRUB 设置（grub.cfg 的 gfxpayload=640x480x32），
@@ -94,13 +94,13 @@ const DBL_SLOP: i32 = 4;
 /// 屏保：无输入 idle_ticks 秒后启动；任意输入退出
 var last_input_tick: u64 = 0;
 var saver_on = false;
-var saver_timeout_s: u32 = 90; // 0 = 禁用（/etc/zos.conf 可调）
+var saver_timeout_s: u32 = 90; // 0 = 禁用（/etc/ousia.conf 可调）
 const Star = struct { x: i32, y: i32, sp: i32 };
 var stars: [48]Star = undefined;
 var saver_frame: u32 = 0;
 
 // 任务栏
-var btn_pressed = false; // ZOS 按钮（菜单打开期间保持按下）
+var btn_pressed = false; // OusiaOS 按钮（菜单打开期间保持按下）
 var clock_buf: [5]u8 = "00:00".*;
 var last_clock: [5]u8 = "00:00".*;
 
@@ -243,7 +243,7 @@ const menu_items = [_]MenuItem{
     .{ .label = "Control Panel", .enabled = true, .act = .launch, .path = "/bin/cpanel" },
     .{ .label = "3D Demos", .enabled = true, .act = .launch, .path = "/bin/glview" },
     .{ .label = "", .enabled = false, .sep = true },
-    .{ .label = "About ZOS...", .enabled = true, .act = .about },
+    .{ .label = "About OusiaOS...", .enabled = true, .act = .about },
     .{ .label = "", .enabled = false, .sep = true },
     .{ .label = "Exit GUI", .enabled = false }, // 教学演示：置灰项的画法
 };
@@ -685,7 +685,7 @@ pub fn textScaled(x: i32, y: i32, s: []const u8, fg: u32, scale: i32) void {
 // ---------------- 图层几何 ----------------
 
 fn btnRect() Rect {
-    return mkRect(4, TB_Y + 3, 52, TASKBAR_H - 6);
+    return mkRect(4, TB_Y + 3, 84, TASKBAR_H - 6);
 }
 
 fn clockRect() Rect {
@@ -988,12 +988,12 @@ fn paintTaskbar() void {
     fillRect(mkRect(0, TB_Y, SCR_W, TASKBAR_H), pal.chrome);
     hline(0, SCR_W - 1, TB_Y, pal.white); // 顶缘亮线（凸出感）
 
-    // ZOS 按钮：菜单打开期间保持"按下"
+    // OusiaOS 按钮：菜单打开期间保持"按下"
     const b = btnRect();
     fillRect(b, pal.chrome);
     bevel2(b, !btn_pressed);
     const off: i32 = if (btn_pressed) 1 else 0;
-    textBold(b.x + 14 + off, b.y + 1 + off, "ZOS", pal.black);
+    textBold(b.x + 14 + off, b.y + 1 + off, "OusiaOS", pal.black);
 
     // 按钮右侧的蚀刻分隔线（暗+亮 = 凹槽）
     vline(b.x + b.w + 8, TB_Y + 4, TB_Y + TASKBAR_H - 5, pal.shadow);
@@ -1262,7 +1262,7 @@ fn paintSaverFrame() void {
     if (saver_frame % 100 == 0) {
         addDamage(mkRect(SCR_W - 200, SCR_H - 40, 192, 16));
     }
-    if (saver_frame % 100 >= 95) text(SCR_W - 196, SCR_H - 40, "ZOS -- idle", px(64, 64, 64));
+    if (saver_frame % 100 >= 95) text(SCR_W - 196, SCR_H - 40, "OusiaOS -- idle", px(64, 64, 64));
 }
 
 /// 后备缓冲 → 帧缓冲：只搬运脏矩形覆盖的行
@@ -1564,7 +1564,7 @@ fn handlePress(x: i32, y: i32) void {
         icon_sel = -1;
     }
 
-    // 5) 任务栏：ZOS 按钮弹菜单，窗口按钮最小化/还原/提层
+    // 5) 任务栏：OusiaOS 按钮弹菜单，窗口按钮最小化/还原/提层
     if (inRect(x, y, btnRect())) {
         menu_open = true;
         btn_pressed = true;
@@ -1796,7 +1796,7 @@ pub fn init() void {
     wallpaper = pal.desktop;
 
     active = true;
-    setKernelTitle(0, "About ZOS");
+    setKernelTitle(0, "About OusiaOS");
     setKernelTitle(1, "Terminal");
     apps.init(); // 内核应用状态复位（about/terminal）
 
@@ -1823,7 +1823,7 @@ pub fn lateInit() void {
     _ = @import("audio.zig").playSystem(0); // 0 = startup chime
 }
 
-// ---------------- 设置（/etc/zos.conf） ----------------
+// ---------------- 设置（/etc/ousia.conf） ----------------
 //
 // Control Panel 写、gui 读的极简 key=value 文本：
 //   wallpaper=0,128,128     桌面底色 RGB
@@ -1831,7 +1831,7 @@ pub fn lateInit() void {
 // 文件在 ramfs 里，重启丢失（教学内核没有掉电存储）。
 
 pub fn loadSettings() void {
-    const node = vfs.resolve("/etc/zos.conf", "/") orelse return;
+    const node = vfs.resolve("/etc/ousia.conf", "/") orelse return;
     const inf = vfs.info(node);
     if (inf.is_dir or inf.size == 0) return;
     var buf: [256]u8 = undefined;

@@ -11,7 +11,7 @@
 #include <errno.h>
 #include <stdlib.h>
 
-long zos_http_get(const char *host, int port, const char *path,
+long ousia_http_get(const char *host, int port, const char *path,
                   char *buf, unsigned long len);
 
 int main(int argc, char **argv) {
@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
     printf("* fetching http://%s:%d%s ...\n", host, port, path);
 
     static char buf[48 * 1024];
-    long r = zos_http_get(host, port, path, buf, sizeof(buf));
+    long r = ousia_http_get(host, port, path, buf, sizeof(buf));
     if (r < 0) {
         errno = (int)-r;
         perror("curl");

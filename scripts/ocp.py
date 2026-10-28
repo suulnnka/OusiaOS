@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""zcp —— ZOS 文件推拉客户端（scp 风格；走 ZOS 的 zfile 协议 :3122）
+"""ocp —— OusiaOS 文件推拉客户端（scp 风格；走 OusiaOS 的 ofile 协议 :3122）
 
 用法:
-    python3 scripts/zcp.py put <本地文件> <ZOS路径>
-    python3 scripts/zcp.py get <ZOS路径> <本地文件>
+    python3 scripts/ocp.py put <本地文件> <OusiaOS路径>
+    python3 scripts/ocp.py get <OusiaOS路径> <本地文件>
 
-环境变量: ZOS_HOST(默认127.0.0.1) ZOS_FILE_PORT(默认3122)
+环境变量: OusiaOS_HOST(默认127.0.0.1) OusiaOS_FILE_PORT(默认3122)
 QEMU 需 -hostfwd tcp::3122-:3122（run.sh 已带）。
 """
 
@@ -33,7 +33,7 @@ def cmd_get(host, port, rpath, lpath):
     sock.sendall(f"GET {rpath}\n".encode())
     header, extra = read_line(sock)
     if not header.startswith("OK "):
-        sys.exit(f"zcp: get {rpath}: {header}")
+        sys.exit(f"ocp: get {rpath}: {header}")
     size = int(header.split()[1])
     data = extra
     while len(data) < size:
@@ -43,7 +43,7 @@ def cmd_get(host, port, rpath, lpath):
         data += chunk
     sock.close()
     if len(data) < size:
-        sys.exit(f"zcp: get {rpath}: short read ({len(data)}/{size})")
+        sys.exit(f"ocp: get {rpath}: short read ({len(data)}/{size})")
     with open(lpath, "wb") as f:
         f.write(data)
     print(f"get: {rpath} -> {lpath} ({size} bytes)")
@@ -59,7 +59,7 @@ def cmd_put(host, port, lpath, rpath):
     header, _ = read_line(sock)
     sock.close()
     if header != "OK":
-        sys.exit(f"zcp: put {rpath}: {header}")
+        sys.exit(f"ocp: put {rpath}: {header}")
     print(f"put: {lpath} -> {rpath} ({len(data)} bytes)")
 
 
@@ -67,8 +67,8 @@ def main():
     if len(sys.argv) != 4:
         print(__doc__)
         sys.exit(1)
-    host = os.environ.get("ZOS_HOST", "127.0.0.1")
-    port = int(os.environ.get("ZOS_FILE_PORT", "3122"))
+    host = os.environ.get("OusiaOS_HOST", "127.0.0.1")
+    port = int(os.environ.get("OusiaOS_FILE_PORT", "3122"))
     op, a, b = sys.argv[1], sys.argv[2], sys.argv[3]
     if op == "get":
         cmd_get(host, port, a, b)

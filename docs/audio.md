@@ -1,14 +1,14 @@
 # 音频子系统：AC'97
 
-ZOS 的音频是**内核内**的 AC'97 驱动（`kernel/audio.zig`）+ DDS 正弦
-合成器：`beep`/`music` 命令经 `zos_beep` 扩展系统调用（nr 505）触发
+OusiaOS 的音频是**内核内**的 AC'97 驱动（`kernel/audio.zig`）+ DDS 正弦
+合成器：`beep`/`music` 命令经 `ousia_beep` 扩展系统调用（nr 505）触发
 内核阻塞播放。QEMU 侧用 `-device AC97` 提供设备（Intel 82801AA），
 任何 audiodev 后端皆可（无后端时静音，驱动靠超时兜底安全返回）。
 
 ```
 用户态                          内核
 ──────                          ────
-beep 440 500 / music            syscall 505 zos_beep(freq, ms)
+beep 440 500 / music            syscall 505 ousia_beep(freq, ms)
                                   └ audio.playTone（阻塞会话，net 同款）
                                       ├ Synth：DDS 相位累加 → 16bit 立体声 PCM
                                       ├ 播放环：武装 BDL 缓冲、推进 LVI
@@ -98,7 +98,7 @@ v = SINE[phase >> 24]            // 256 项 comptime 正弦表
 |---|---|
 | `beep [freq] [ms]` | 单音，默认 440Hz 200ms；参数 20..8000Hz |
 | `music` | 《欢乐颂》主题 28 音符（连续 beep + 50ms 气口） |
-| `zos_beep(freq, ms)`（nr 505） | 阻塞播放；返回 0 或 -errno（-19 无设备、-11 忙、-22 参数越界） |
+| `ousia_beep(freq, ms)`（nr 505） | 阻塞播放；返回 0 或 -errno（-19 无设备、-11 忙、-22 参数越界） |
 
 会话互斥：`busy` 标志保证一次只有一个播放（-11 EAGAIN）。
 无音频后端（`-audiodev none`）时 DMA 不消费数据，播放环靠
@@ -123,12 +123,12 @@ python3 scripts/audiotest.py
 - **WAV 播放**：playWav 解析 RIFF（只认线性 PCM），把 8/16bit、
   单/立体声、任意采样率归一化到 48kHz S16 立体声（16.16 定点步进
   最近邻重采样），再走与合成共用的 stream() 播放环；
-  shell `play <file.wav>` / SYS_zos_wav(506)。
+  shell `play <file.wav>` / SYS_ousia_wav(506)。
 - **系统音效**：playNotes 的音符序列合成（{频率,毫秒} comptime 表），
   playSystem(kind) 七种——GUI 开机音、FM 打开/删除、扫雷插旗/爆雷/
-  新纪录/通关等；SYS_zos_sound(507)。
+  新纪录/通关等；SYS_ousia_sound(507)。
 - **音量**：mixer 衰减寄存器（0=最大 63=最小）线性换算，
-  SYS_zos_volume(509)；Control Panel 即时调节并写入 /etc/zos.conf
+  SYS_ousia_volume(509)；Control Panel 即时调节并写入 /etc/ousia.conf
   （gui.lateInit 开机读回）。
 - 仍单会话：两个播放方竞争时后者 EAGAIN（系统音效忙时静默跳过）；
   多路混音器 = 多源求和 + 削波保护，仍是好练习。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZOS ext2 落盘验证：QEMU 里写文件 → 宿主机 e2fsck + debugfs 检查镜像。
+"""OusiaOS ext2 落盘验证：QEMU 里写文件 → 宿主机 e2fsck + debugfs 检查镜像。
 
 用法: python3 scripts/fscheck.py
 
@@ -25,7 +25,7 @@ import time
 
 QEMU_CMD = [
     "qemu-system-x86_64",
-    "-cdrom", "build/zos.iso",
+    "-cdrom", "build/ousia.iso",
     "-m", "256M",
     "-display", "none",
     "-no-reboot",
@@ -46,7 +46,7 @@ BIG_KB = 20  # 20KB > 12 直接块 → 必走一重间接块
 def start_fixture():
     """宿主机 8123 端口提供 big.bin（patterned 20KB，供逐字节比对）。
     （不用 8099——test.py 刚用过，TIME_WAIT 会让 curl 连不上而挂起）"""
-    d = tempfile.mkdtemp(prefix="zos_www_")
+    d = tempfile.mkdtemp(prefix="ousia_www_")
     blob = bytes((i * 7 + 13) & 0xFF for i in range(BIG_KB * 1024))
     with open(os.path.join(d, "big.bin"), "wb") as f:
         f.write(blob)
@@ -126,7 +126,7 @@ def main():
     src = "build/disk.img"
     if not os.path.exists(src):
         sys.exit("缺少 build/disk.img —— 先跑 zig build iso")
-    fd, disk = tempfile.mkstemp(prefix="zos_fsck_", suffix=".img")
+    fd, disk = tempfile.mkstemp(prefix="ousia_fsck_", suffix=".img")
     os.close(fd)
     shutil.copyfile(src, disk)
     httpd, blob = start_fixture()

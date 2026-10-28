@@ -14,7 +14,7 @@
 //!   - 图形      line/ellipse/circle/poly/polyfill + text 多档字号
 //!   - 剪贴板    clipSet/clipGet（内核全局缓冲，Ctrl+C/X/V 由应用翻译）
 
-const zos = @import("zos.zig");
+const ousia = @import("ousia.zig");
 const font = @import("font.zig");
 
 pub const EV_PRESS: u8 = 1; // 左键按下（x,y = 客户区坐标）
@@ -75,7 +75,7 @@ pub fn create(w: i32, h: i32, title: []const u8) bool {
     const n = @min(title.len, t.len - 1);
     @memcpy(t[0..n], title[0..n]);
     t[n] = 0;
-    const r = zos.syscall3(510, @intCast(w), @intCast(h), @intFromPtr(&t));
+    const r = ousia.syscall3(510, @intCast(w), @intCast(h), @intFromPtr(&t));
     if (r <= 0) return false;
     px = @ptrFromInt(@as(usize, @intCast(r)));
     sw = w;
@@ -92,7 +92,7 @@ pub fn onResizeEvent(e: Event) void {
 
 /// 表面重分配（EV_RESIZE 之后应用无需再调；主动变尺寸时用）
 pub fn resize(w: i32, h: i32) bool {
-    const r = zos.syscall2(518, @intCast(w), @intCast(h));
+    const r = ousia.syscall2(518, @intCast(w), @intCast(h));
     if (r != 0) return false;
     sw = w;
     sh = h;
@@ -105,17 +105,17 @@ pub fn setTitle(title: []const u8) void {
     const n = @min(title.len, t.len - 1);
     @memcpy(t[0..n], title[0..n]);
     t[n] = 0;
-    _ = zos.syscall1(519, @intFromPtr(&t));
+    _ = ousia.syscall1(519, @intFromPtr(&t));
 }
 
 /// 画完调用：内核记脏区，IRQ0 合成上屏
 pub fn present() void {
-    _ = zos.syscall0(511);
+    _ = ousia.syscall0(511);
 }
 
 /// r,g,b → 帧缓冲像素格式（BGR 位移由内核告诉你）
 pub fn color(r: u8, g: u8, b: u8) u32 {
-    const v: isize = zos.syscall3(514, r, g, b);
+    const v: isize = ousia.syscall3(514, r, g, b);
     return @truncate(@as(u64, @bitCast(v)));
 }
 
@@ -127,18 +127,18 @@ pub fn surface() []u32 {
 /// 帧缓冲像素格式的通道移位（win_fmt；miniGL 逐像素打包用，
 /// 一次查询后渲染循环里零陷入）
 pub fn fmt() struct { rsh: u5, gsh: u5, bsh: u5 } {
-    const f: usize = @bitCast(zos.syscall0(515));
+    const f: usize = @bitCast(ousia.syscall0(515));
     return .{ .rsh = @intCast((f >> 10) & 31), .gsh = @intCast((f >> 5) & 31), .bsh = @intCast(f & 31) };
 }
 
 /// 阻塞等事件；timeout_ms=0 无限等，超时返回 0（闪烁计时用）
 pub fn wait(buf: []Event, timeout_ms: i32) usize {
-    const r = zos.syscall3(513, @intFromPtr(buf.ptr), buf.len, @as(usize, @bitCast(@as(isize, timeout_ms))));
+    const r = ousia.syscall3(513, @intFromPtr(buf.ptr), buf.len, @as(usize, @bitCast(@as(isize, timeout_ms))));
     return if (r > 0) @intCast(r) else 0;
 }
 
 pub fn poll(buf: []Event) usize {
-    const r = zos.syscall3(512, @intFromPtr(buf.ptr), buf.len, 0);
+    const r = ousia.syscall3(512, @intFromPtr(buf.ptr), buf.len, 0);
     return if (r > 0) @intCast(r) else 0;
 }
 
@@ -147,13 +147,13 @@ pub fn poll(buf: []Event) usize {
 /// 写剪贴板（最长 1KB）；返回写入长度或 -errno
 pub fn clipSet(data: []const u8) isize {
     if (data.len == 0) return 0;
-    return zos.syscall2(516, @intFromPtr(data.ptr), data.len);
+    return ousia.syscall2(516, @intFromPtr(data.ptr), data.len);
 }
 
 /// 读剪贴板；返回拷入 buf 的长度（0 = 空）
 pub fn clipGet(buf: []u8) isize {
     if (buf.len == 0) return 0;
-    return zos.syscall2(517, @intFromPtr(buf.ptr), buf.len);
+    return ousia.syscall2(517, @intFromPtr(buf.ptr), buf.len);
 }
 
 // ---------------- 表面绘制原语 ----------------
@@ -730,5 +730,5 @@ pub const MenuBar = struct {
 /// 系统音效（内核 DDS 合成；音频忙时静默）
 /// 0 startup 1 click 2 open 3 close 4 ding 5 error 6 tada
 pub fn sound(kind: u8) void {
-    _ = zos.syscall1(507, kind);
+    _ = ousia.syscall1(507, kind);
 }

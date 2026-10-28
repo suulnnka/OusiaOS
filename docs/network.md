@@ -1,6 +1,6 @@
 # 网络栈
 
-ZOS 内置一套可在 QEMU user 网络下**真实工作**的教学网络栈：
+OusiaOS 内置一套可在 QEMU user 网络下**真实工作**的教学网络栈：
 `ping` 与 `curl http://example.com/` 都能跑通。分三层实现——
 PCI 枚举（`kernel/pci.zig`）→ e1000 驱动（`kernel/e1000.zig`）→
 协议栈（`kernel/net.zig`）。
@@ -8,7 +8,7 @@ PCI 枚举（`kernel/pci.zig`）→ e1000 驱动（`kernel/e1000.zig`）→
 ```
 用户态                          内核
 ──────                          ────
-ping / curl                     zos_ping(501) / zos_http_get(502)
+ping / curl                     ousia_ping(501) / ousia_http_get(502)
   │                               │
   │                            net.zig：会话大锁 + 阻塞等待
   │                              ├ HTTP：拼请求/找 \r\n\r\n
@@ -41,7 +41,7 @@ QEMU user 网络：guest 10.0.2.15/24  gw 10.0.2.2(=宿主回环)  dns 10.0.2.3
 ```bash
 # 宿主机
 python3 -m http.server 8099
-# ZOS shell（10.0.2.2 就是宿主机）
+# OusiaOS shell（10.0.2.2 就是宿主机）
 curl http://10.0.2.2:8099/hello.txt
 ```
 
@@ -151,7 +151,7 @@ fn waitTick() void {          // "睡一个 tick 再看"
 - 8 项静态缓存表（ip/mac/valid）；
 - `arpResolve`：查缓存未命中→广播请求，300ms 窗口重试 3 次；
 - 收到请求（目标是本机 IP）→ 更新缓存 + 单播应答；
-  收到应答 → 更新缓存。**ZOS 也能被 ping**（应答 ICMP echo）。
+  收到应答 → 更新缓存。**OusiaOS 也能被 ping**（应答 ICMP echo）。
 
 ### 4.4 ICMP（ping）
 
@@ -224,9 +224,9 @@ net.zig 的下半部是**被动打开**侧：固定 2 个监听槽（每槽一�
 | 服务 | 端口 | 语义 |
 |---|---|---|
 | 远程 shell | 23 | 行规程（回显/退格/CRLF/IAC 剥离）→ 完整行投递；连接建立即 `proc.spawnSession` 拉起 `/bin/sh`，其 stdin/stdout 直接指向 sock 节点（fd 抽象的胜利：sh 不知道对面是网络）；阻塞读 = 进程 blocked + 数据到达 wake；连接关闭 → EOF → sh 退出 → 每拍收割 |
-| zfile | 3122 | 类 scp 协议：`GET /path` → `OK <size>\n`+字节流；`PUT /path <size>`+字节流 → `OK\n`；内核以 root 读写 vfs（ext2 落盘）。流式状态机（一包可能同时含命令头与正文开头） |
+| ofile | 3122 | 类 scp 协议：`GET /path` → `OK <size>\n`+字节流；`PUT /path <size>`+字节流 → `OK\n`；内核以 root 读写 vfs（ext2 落盘）。流式状态机（一包可能同时含命令头与正文开头） |
 
-宿主机客户端：`scripts/zterm.py`（远程终端）、`scripts/zcp.py get/put`
+宿主机客户端：`scripts/oterm.py`（远程终端）、`scripts/ocp.py get/put`
 （文件推拉）。QEMU 需要 `-netdev user,...,hostfwd=tcp::4321-:23,
 hostfwd=tcp::3122-:3122`（run.sh/test.py 已带）。
 
@@ -248,7 +248,7 @@ root。SSH 是进阶练习（SHA-256/X25519/Ed25519/ChaCha20-Poly1305，
 | TCP 重传 | 1s 等 ACK ×4；接收缓冲 64KB | net.zig |
 | 服务器重传 | 150ms 超时，整窗重发 | net.zig |
 | HTTP 总超时 | 15s | net.zig |
-| 监听槽 | 2 个（:23 shell / :3122 zfile），每槽一连接 | telnetd.zig |
+| 监听槽 | 2 个（:23 shell / :3122 ofile），每槽一连接 | telnetd.zig |
 
 ## 7. 扩展练习方向
 

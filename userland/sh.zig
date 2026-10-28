@@ -1,10 +1,10 @@
-//! sh —— ZOS 交互式 shell（init 进程，PID 1）
+//! sh —— OusiaOS 交互式 shell（init 进程，PID 1）
 //!
 //! 教学要点：
 //!   - shell 的本质：read(行) → fork → exec(命令) → waitpid 的循环
 //!   - 内建命令（cd/exit/help）在 shell 进程内直接完成，不 fork
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 
 comptime {
     _ = @import("lib/crt0.zig");
@@ -13,18 +13,18 @@ comptime {
 var line: [512]u8 = undefined;
 
 export fn main() i32 {
-    zos.printf("\nZOS shell (pid={d}) -- type 'help' for commands\n\n", .{zos.getpid()});
+    ousia.printf("\nOusiaOS shell (pid={d}) -- type 'help' for commands\n\n", .{ousia.getpid()});
 
     while (true) {
         var cwd: [256]u8 = undefined;
-        _ = zos.getcwd(&cwd);
-        zos.printf("{s} $ ", .{cstr(&cwd)});
+        _ = ousia.getcwd(&cwd);
+        ousia.printf("{s} $ ", .{cstr(&cwd)});
 
-        const n = zos.read(0, &line);
+        const n = ousia.read(0, &line);
         if (n < 0) continue;
         if (n == 0) {
             // stdin EOF：远程会话被对端关闭（console 读不会返回 0）
-            if (zos.getpid() != 1) return 0; // PID 1 的 console sh 永不该退
+            if (ousia.getpid() != 1) return 0; // PID 1 的 console sh 永不该退
             continue;
         }
         var args_buf: [8][64]u8 = undefined;
@@ -45,7 +45,7 @@ export fn main() i32 {
                 skip_next = false;
                 continue;
             }
-            if (zos.eql(a, ">") or zos.eql(a, ">>")) {
+            if (ousia.eql(a, ">") or ousia.eql(a, ">>")) {
                 redir_append = a.len == 2;
                 if (ai + 1 >= raw.len) {
                     redir_err = true;
@@ -61,7 +61,7 @@ export fn main() i32 {
             }
         }
         if (redir_err) {
-            zos.printf("sh: syntax error: missing redirect target\n", .{});
+            ousia.printf("sh: syntax error: missing redirect target\n", .{});
             continue;
         }
         const argv = clean[0..clean_n];
@@ -70,8 +70,8 @@ export fn main() i32 {
         const cmd = argv[0];
 
         // ---- 内建命令 ----
-        if (zos.eql(cmd, "help")) {
-            zos.printf(
+        if (ousia.eql(cmd, "help")) {
+            ousia.printf(
                 \\commands: ls [-l] [dir]  cat <file>  echo <text>  ps  uname
                 \\          sleep <sec>  hello  forkdemo  wc [-c|-l|-w]  cdemo
                 \\          ifconfig  ping <ip> [n]  curl http://host[:port]/path
@@ -86,82 +86,82 @@ export fn main() i32 {
             , .{});
             continue;
         }
-        if (zos.eql(cmd, "id")) {
-            const uid = zos.getuid();
-            const gid = zos.getgid();
+        if (ousia.eql(cmd, "id")) {
+            const uid = ousia.getuid();
+            const gid = ousia.getgid();
             var nb: [16]u8 = undefined;
             const un = userByUid(uid, &nb);
             var gb: [16]u8 = undefined;
             const gn = userByUid(gid, &gb); // 教学简化：group 名也走 passwd
-            zos.printf("uid={d}({s}) gid={d}({s})\n", .{ uid, un, gid, gn });
+            ousia.printf("uid={d}({s}) gid={d}({s})\n", .{ uid, un, gid, gn });
             continue;
         }
-        if (zos.eql(cmd, "whoami")) {
+        if (ousia.eql(cmd, "whoami")) {
             var nb: [16]u8 = undefined;
-            zos.printf("{s}\n", .{cstrN(&nb, userByUid(zos.getuid(), &nb))});
+            ousia.printf("{s}\n", .{cstrN(&nb, userByUid(ousia.getuid(), &nb))});
             continue;
         }
-        if (zos.eql(cmd, "su")) {
+        if (ousia.eql(cmd, "su")) {
             const target = if (argv.len >= 2) argv[1] else "root";
             const uid = uidByUser(target) orelse {
-                zos.printf("su: unknown user {s}\n", .{target});
+                ousia.printf("su: unknown user {s}\n", .{target});
                 continue;
             };
             // passwd 第 4 列是该用户的主组：一并切换（教学版 su）
             const gid = gidOfUser(target);
-            if (gid >= 0) _ = zos.setgid(@intCast(gid));
-            const r = zos.setuid(uid);
+            if (gid >= 0) _ = ousia.setgid(@intCast(gid));
+            const r = ousia.setuid(uid);
             if (r != 0) {
-                zos.printf("su: setuid({d}) failed: {d} (only root can su others)\n", .{ uid, r });
+                ousia.printf("su: setuid({d}) failed: {d} (only root can su others)\n", .{ uid, r });
             } else {
                 // 与 id 相同的分步写法：先取名字再打印
                 var nb: [16]u8 = undefined;
                 const un = userByUid(uid, &nb);
-                zos.printf("now uid={d} ({s})\n", .{ uid, un });
+                ousia.printf("now uid={d} ({s})\n", .{ uid, un });
             }
             continue;
         }
-        if (zos.eql(cmd, "chmod")) {
+        if (ousia.eql(cmd, "chmod")) {
             if (argv.len < 3) {
-                zos.printf("usage: chmod <octal> <file>  e.g. chmod 600 /etc/shadow\n", .{});
+                ousia.printf("usage: chmod <octal> <file>  e.g. chmod 600 /etc/shadow\n", .{});
                 continue;
             }
             const mode = parseOctal(argv[1]);
-            const r = zos.chmod(argv[2], mode);
-            if (r != 0) zos.printf("chmod: {s}: failed ({d})\n", .{ argv[2], r });
+            const r = ousia.chmod(argv[2], mode);
+            if (r != 0) ousia.printf("chmod: {s}: failed ({d})\n", .{ argv[2], r });
             continue;
         }
-        if (zos.eql(cmd, "chown")) {
+        if (ousia.eql(cmd, "chown")) {
             if (argv.len < 3) {
-                zos.printf("usage: chown <user|uid> <file>\n", .{});
+                ousia.printf("usage: chown <user|uid> <file>\n", .{});
                 continue;
             }
             const uid = uidByUser(argv[1]) orelse parseDec(argv[1]);
-            const r = zos.chown(argv[2], @intCast(uid), -1);
-            if (r != 0) zos.printf("chown: {s}: failed ({d})\n", .{ argv[2], r });
+            const r = ousia.chown(argv[2], @intCast(uid), -1);
+            if (r != 0) ousia.printf("chown: {s}: failed ({d})\n", .{ argv[2], r });
             continue;
         }
-        if (zos.eql(cmd, "cd")) {
+        if (ousia.eql(cmd, "cd")) {
             if (argv.len < 2) {
-                zos.printf("cd: missing argument\n", .{});
+                ousia.printf("cd: missing argument\n", .{});
             } else {
-                const r = zos.chdir(argv[1]);
-                if (r < 0) zos.printf("cd: {s}: failed ({d})\n", .{ argv[1], r });
+                const r = ousia.chdir(argv[1]);
+                if (r < 0) ousia.printf("cd: {s}: failed ({d})\n", .{ argv[1], r });
             }
             continue;
         }
-        if (zos.eql(cmd, "pwd")) {
+        if (ousia.eql(cmd, "pwd")) {
             var b: [256]u8 = undefined;
-            _ = zos.getcwd(&b);
-            zos.printf("{s}\n", .{cstr(&b)});
+            _ = ousia.getcwd(&b);
+            ousia.printf("{s}\n", .{cstr(&b)});
             continue;
         }
-        if (zos.eql(cmd, "exit")) {
-            zos.printf("shell exit -- system idle\n", .{});
+        if (ousia.eql(cmd, "exit")) {
+            ousia.printf("shell exit -- system idle\n", .{});
             return 0;
         }
-        if (zos.eql(cmd, "clear")) {
-            zos.printf("\x1b[2J\x1b[H", .{}); // 串口 ANSI；VGA 下原样显示
+        if (ousia.eql(cmd, "clear")) {
+            ousia.printf("\x1b[2J\x1b[H", .{}); // 串口 ANSI；VGA 下原样显示
             continue;
         }
 
@@ -172,34 +172,34 @@ export fn main() i32 {
         else
             joinPath(&path, "/bin/", cmd);
 
-        const pid = zos.fork();
+        const pid = ousia.fork();
         if (pid < 0) {
-            zos.printf("sh: fork failed\n", .{});
+            ousia.printf("sh: fork failed\n", .{});
             continue;
         }
         if (pid == 0) {
             // 子进程：先装好重定向（fd1 → 文件），再执行命令（失败则退出）
             if (redir_path) |rp| {
-                const flags: i32 = zos.O_WRONLY | zos.O_CREAT |
-                    (if (redir_append) @as(i32, 0) else zos.O_TRUNC);
-                const rfd = zos.open(rp, flags);
+                const flags: i32 = ousia.O_WRONLY | ousia.O_CREAT |
+                    (if (redir_append) @as(i32, 0) else ousia.O_TRUNC);
+                const rfd = ousia.open(rp, flags);
                 if (rfd < 0) {
-                    zos.printf("sh: {s}: cannot open for write\n", .{rp});
-                    zos.exit(1);
+                    ousia.printf("sh: {s}: cannot open for write\n", .{rp});
+                    ousia.exit(1);
                 }
-                if (redir_append) _ = zos.lseek(@intCast(rfd), 0, 2); // >> 从尾部续写
-                _ = zos.dup2(@intCast(rfd), 1);
-                if (rfd != 1) _ = zos.close(@intCast(rfd));
+                if (redir_append) _ = ousia.lseek(@intCast(rfd), 0, 2); // >> 从尾部续写
+                _ = ousia.dup2(@intCast(rfd), 1);
+                if (rfd != 1) _ = ousia.close(@intCast(rfd));
             }
-            const r = zos.execve(full, argv);
-            zos.printf("sh: {s}: not found ({d})\n", .{ full, r });
-            zos.exit(127);
+            const r = ousia.execve(full, argv);
+            ousia.printf("sh: {s}: not found ({d})\n", .{ full, r });
+            ousia.exit(127);
         }
         // 父进程：等待子进程
         var status: i32 = 0;
-        const wpid = zos.waitpid(pid, &status);
+        const wpid = ousia.waitpid(pid, &status);
         if (wpid < 0) {
-            zos.printf("sh: waitpid failed\n", .{});
+            ousia.printf("sh: waitpid failed\n", .{});
         }
     }
     return 0;
@@ -209,11 +209,11 @@ export fn main() i32 {
 
 /// 读 /etc/passwd 找 uid → 用户名；找不到用数字（buf: [16]u8）
 fn userByUid(uid: u32, buf: *[16]u8) []const u8 {
-    const fd = zos.open("/etc/passwd", 0);
+    const fd = ousia.open("/etc/passwd", 0);
     if (fd < 0) return numStr(uid, buf);
-    defer _ = zos.close(@intCast(fd));
+    defer _ = ousia.close(@intCast(fd));
     var pb: [2048]u8 = undefined;
-    const n = zos.read(@intCast(fd), pb[0..]);
+    const n = ousia.read(@intCast(fd), pb[0..]);
     if (n <= 0) return numStr(uid, buf);
     // 行格式 name:x:uid:gid:...
     var it = LineIt{ .s = pb[0..@intCast(n)] };
@@ -239,11 +239,11 @@ fn userByUid(uid: u32, buf: *[16]u8) []const u8 {
 
 /// 用户名 → uid
 fn uidByUser(name: []const u8) ?u32 {
-    const fd = zos.open("/etc/passwd", 0);
+    const fd = ousia.open("/etc/passwd", 0);
     if (fd < 0) return null;
-    defer _ = zos.close(@intCast(fd));
+    defer _ = ousia.close(@intCast(fd));
     var pb: [2048]u8 = undefined;
-    const n = zos.read(@intCast(fd), pb[0..]);
+    const n = ousia.read(@intCast(fd), pb[0..]);
     if (n <= 0) return null;
     var it = LineIt{ .s = pb[0..@intCast(n)] };
     while (it.next()) |ln| {
@@ -256,7 +256,7 @@ fn uidByUser(name: []const u8) ?u32 {
             while (i < ln.len and ln[i] != ':') i += 1;
             const field = ln[start..i];
             if (col == 0) {
-                name_ok = zos.eql(field, name);
+                name_ok = ousia.eql(field, name);
             } else if (col == 2) {
                 uid = parseDec(field);
                 break;
@@ -271,11 +271,11 @@ fn uidByUser(name: []const u8) ?u32 {
 
 /// 用户名 → 主组 gid（passwd 第 4 列）；找不到 -1
 fn gidOfUser(name: []const u8) i64 {
-    const fd = zos.open("/etc/passwd", 0);
+    const fd = ousia.open("/etc/passwd", 0);
     if (fd < 0) return -1;
-    defer _ = zos.close(@intCast(fd));
+    defer _ = ousia.close(@intCast(fd));
     var pb: [2048]u8 = undefined;
-    const n = zos.read(@intCast(fd), pb[0..]);
+    const n = ousia.read(@intCast(fd), pb[0..]);
     if (n <= 0) return -1;
     var it = LineIt{ .s = pb[0..@intCast(n)] };
     while (it.next()) |ln| {
@@ -288,7 +288,7 @@ fn gidOfUser(name: []const u8) i64 {
             while (i < ln.len and ln[i] != ':') i += 1;
             const field = ln[start..i];
             if (col == 0) {
-                name_ok = zos.eql(field, name);
+                name_ok = ousia.eql(field, name);
             } else if (col == 3) {
                 gid = @intCast(parseDec(field));
                 break;

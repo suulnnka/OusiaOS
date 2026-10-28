@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""zterm —— 连接 ZOS 远程 shell（明文 telnet 式）
+"""oterm —— 连接 OusiaOS 远程 shell（明文 telnet 式）
 
 用法:
-    python3 scripts/zterm.py [host] [port]     # 默认 127.0.0.1 4321
+    python3 scripts/oterm.py [host] [port]     # 默认 127.0.0.1 4321
 
-QEMU 需 -hostfwd tcp::4321-:23（run.sh 已带）。回显/行编辑在 ZOS 侧
+QEMU 需 -hostfwd tcp::4321-:23（run.sh 已带）。回显/行编辑在 OusiaOS 侧
 完成（终端保持本地行缓冲即可）。Ctrl-C 或 Ctrl-D 断开——guest 里的
 会话 shell 会随连接关闭自动退出。
 """
@@ -25,7 +25,7 @@ def main():
             while True:
                 data = sock.recv(4096)
                 if not data:
-                    print("\n[zterm: connection closed]", file=sys.stderr)
+                    print("\n[oterm: connection closed]", file=sys.stderr)
                     sys.exit(0)
                 sys.stdout.buffer.write(data)
                 sys.stdout.buffer.flush()
@@ -40,7 +40,7 @@ def main():
                 break
             sock.sendall(line)
     except KeyboardInterrupt:
-        print("\n[zterm: bye]", file=sys.stderr)
+        print("\n[oterm: bye]", file=sys.stderr)
     finally:
         sock.close()
 

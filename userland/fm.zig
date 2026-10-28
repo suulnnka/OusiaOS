@@ -4,7 +4,7 @@
 //!   - File 菜单：New File / New Folder / Delete / Exit；Edit：Copy；
 //!     View：Refresh——菜单栏是 lib/win.MenuBar 控件
 //!   - New File/Folder 用【Edit 控件】行内对话框收名字（"Edit 控件"
-//!     特性的首个真实用户），open(O_CREAT) / zos.mkdir 落盘
+//!     特性的首个真实用户），open(O_CREAT) / ousia.mkdir 落盘
 //!   - 双击（EV_DBL）：目录进入；文本文件 fork+execve 交给 Notepad
 //!     （窗口多实例练习②的另一半：同一应用可以同时开多个）
 //!   - Delete：unlink 文件 / rmdir 空目录（内核查权限，失败在状态栏报错）
@@ -14,7 +14,7 @@
 //!     Notepad 保存后切回来立即看到新大小）
 //!   - 标题栏实时显示当前路径（win_title 系统调用）
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 const win = @import("lib/win.zig");
 
 comptime {
@@ -147,8 +147,8 @@ fn list() void {
 
     var zpath: [256]u8 = undefined;
     const zp = withNul(&zpath, path[0..path_len]);
-    var dirents: [48]zos.Dirent = undefined;
-    const n = zos.listDir(zp[0..path_len], &dirents);
+    var dirents: [48]ousia.Dirent = undefined;
+    const n = ousia.listDir(zp[0..path_len], &dirents);
     if (n > 0) {
         for (dirents[0..@intCast(n)]) |*d| {
             if (count >= MAX_ENTRIES) break;
@@ -161,7 +161,7 @@ fn list() void {
             // stat 取 mode/uid/gid/size
             var full: [300]u8 = undefined;
             const fl = joinPath(&full, zp[0..path_len], d.nameSlice());
-            if (zos.stat(fl)) |st| {
+            if (ousia.stat(fl)) |st| {
                 e.mode = st.mode;
                 e.uid = st.uid;
                 e.gid = st.gid;
@@ -218,11 +218,11 @@ fn selectEntry(i: usize) void {
         var zpath: [256]u8 = undefined;
         _ = withNul(&zpath, path[0..path_len]);
         const fl = joinPath(&full, zpath[0..path_len], label(e));
-        const fd = zos.open(fl, 0);
+        const fd = ousia.open(fl, 0);
         if (fd >= 0) {
-            const n = zos.read(@intCast(fd), prev[0..]);
+            const n = ousia.read(@intCast(fd), prev[0..]);
             if (n > 0) prev_len = @intCast(n);
-            _ = zos.close(@intCast(fd));
+            _ = ousia.close(@intCast(fd));
         }
     }
     dirty = true;
@@ -240,13 +240,13 @@ fn openEntry(i: usize) void {
     var zfull: [320]u8 = undefined;
     const fl = fullPath(&full, label(e));
     const zf = withNul(&zfull, fl);
-    const pid = zos.fork();
+    const pid = ousia.fork();
     if (pid == 0) {
         // 子进程：变成 Notepad（失败就退出，不留孤儿命令进程）
         const argv = [_][]const u8{ "/bin/note", zf[0..fl.len] };
-        const r = zos.execve("/bin/note", &argv);
+        const r = ousia.execve("/bin/note", &argv);
         _ = r;
-        zos.exit(1);
+        ousia.exit(1);
     }
     setStatus("opened in Notepad");
     win.sound(2); // open
@@ -276,9 +276,9 @@ fn dialogOk() void {
     switch (dialog) {
         .new_file => {
             // O_CREAT|O_EXCL：已存在报 EEXIST，不覆盖
-            const fd = zos.open(zf[0..fl.len], win.O_WRONLY | win.O_CREAT | win.O_EXCL);
+            const fd = ousia.open(zf[0..fl.len], win.O_WRONLY | win.O_CREAT | win.O_EXCL);
             if (fd >= 0) {
-                _ = zos.close(@intCast(fd));
+                _ = ousia.close(@intCast(fd));
                 setStatus("file created");
                 win.sound(2);
             } else {
@@ -287,7 +287,7 @@ fn dialogOk() void {
             }
         },
         .new_folder => {
-            const r = zos.mkdir(zf[0..fl.len], 0o755);
+            const r = ousia.mkdir(zf[0..fl.len], 0o755);
             if (r == 0) {
                 setStatus("folder created");
                 win.sound(2);
@@ -309,7 +309,7 @@ fn deleteSel() void {
     const fl = fullPath(&full, label(e));
     const zf = withNul(&zfl, fl);
     var msg: [96]u8 = undefined;
-    const r = if (e.is_dir) zos.rmdir(zf[0..fl.len]) else zos.unlink(zf[0..fl.len]);
+    const r = if (e.is_dir) ousia.rmdir(zf[0..fl.len]) else ousia.unlink(zf[0..fl.len]);
     if (r == 0) {
         setStatus(if (e.is_dir) "folder removed" else "file deleted");
         win.sound(3); // close
@@ -358,28 +358,28 @@ fn pasteFromClip() void {
     const zs = withNul(&zsrc, src);
     const zd = withNul(&zdst, dst[0..dn]);
 
-    const sfd = zos.open(zs[0..src.len], win.O_RDONLY);
+    const sfd = ousia.open(zs[0..src.len], win.O_RDONLY);
     if (sfd < 0) {
         setStatus("cannot open clipboard file");
         win.sound(5);
         return;
     }
-    defer _ = zos.close(@intCast(sfd));
-    const dfd = zos.open(zd[0..dn], win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
+    defer _ = ousia.close(@intCast(sfd));
+    const dfd = ousia.open(zd[0..dn], win.O_WRONLY | win.O_CREAT | win.O_TRUNC);
     if (dfd < 0) {
         setStatus("create Copy of ... failed");
         win.sound(5);
         return;
     }
-    defer _ = zos.close(@intCast(dfd));
+    defer _ = ousia.close(@intCast(dfd));
     var buf: [2048]u8 = undefined;
     var total: usize = 0;
     while (true) {
-        const r = zos.read(@intCast(sfd), &buf);
+        const r = ousia.read(@intCast(sfd), &buf);
         if (r <= 0) break;
         var off: usize = 0;
         while (off < @as(usize, @intCast(r))) {
-            const w = zos.write(@intCast(dfd), buf[off..@intCast(r)]);
+            const w = ousia.write(@intCast(dfd), buf[off..@intCast(r)]);
             if (w <= 0) break;
             off += @intCast(w);
             total += @intCast(w);
@@ -505,7 +505,7 @@ fn handleMenu() void {
             1 => startDialog(.new_folder),
             2 => deleteSel(),
             3 => {},
-            4 => zos.exit(0),
+            4 => ousia.exit(0),
             else => {},
         },
         1 => copySelToClip(), // Edit: Copy
@@ -680,7 +680,7 @@ fn draw() void {
     } else if (sel) |i| {
         const e = &entries[i];
         var ms: [10]u8 = undefined;
-        const mss = zos.modeString(e.mode, &ms);
+        const mss = ousia.modeString(e.mode, &ms);
         n += put(&buf, n, "  |  ");
         n += put(&buf, n, mss);
         n += put(&buf, n, " ");
@@ -782,7 +782,7 @@ export fn main() i32 {
         const n = win.wait(&evs, 0);
         for (evs[0..n]) |e| {
             switch (e.kind) {
-                win.EV_CLOSE => zos.exit(0),
+                win.EV_CLOSE => ousia.exit(0),
                 win.EV_PRESS => press(e.x, e.y, false),
                 win.EV_DBL => press(e.x, e.y, true),
                 win.EV_KEY => key(e.code),

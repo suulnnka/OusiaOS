@@ -1,8 +1,8 @@
-//! music —— 播放一段小旋律（连续调用 zos_beep）
+//! music —— 播放一段小旋律（连续调用 ousia_beep）
 //!
 //! 曲目：贝多芬《欢乐颂》主题（公有领域），C 大调。
 
-const zos = @import("lib/zos.zig");
+const ousia = @import("lib/ousia.zig");
 
 comptime {
     _ = @import("lib/crt0.zig");
@@ -34,14 +34,14 @@ const melody = [_]Note{
 
 export fn main() i32 {
     for (melody, 0..) |n, i| {
-        const r = zos.syscall3(505, n.f, n.ms, 0);
+        const r = ousia.syscall3(505, n.f, n.ms, 0);
         if (r < 0) {
-            zos.printf("music: beep failed ({d}) -- run qemu with '-device AC97'\n", .{r});
+            ousia.printf("music: beep failed ({d}) -- run qemu with '-device AC97'\n", .{r});
             return 1;
         }
         // 音符间留一点气口（休止符效果）
-        if (i + 1 < melody.len) zos.sleepMs(50);
+        if (i + 1 < melody.len) ousia.sleepMs(50);
     }
-    zos.printf("music: ode to joy ({d} notes)\n", .{melody.len});
+    ousia.printf("music: ode to joy ({d} notes)\n", .{melody.len});
     return 0;
 }

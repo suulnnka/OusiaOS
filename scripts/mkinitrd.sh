@@ -17,7 +17,7 @@ chmod 755 build/rootfs/bin/* 2>/dev/null || true
 chmod 644 build/rootfs/etc/issue build/rootfs/etc/motd \
           build/rootfs/etc/passwd build/rootfs/etc/group build/rootfs/hello.txt 2>/dev/null || true
 chmod 600 build/rootfs/etc/shadow 2>/dev/null || true
-chmod 644 build/rootfs/etc/zos.conf build/rootfs/etc/sounds/*.wav 2>/dev/null || true
+chmod 644 build/rootfs/etc/ousia.conf build/rootfs/etc/sounds/*.wav 2>/dev/null || true
 chmod 755 build/rootfs/etc build/rootfs/bin build/rootfs/dev build/rootfs/tmp build/rootfs/etc/sounds 2>/dev/null || true
 
 # ustar 格式；-C 保证条目无 "./" 前缀

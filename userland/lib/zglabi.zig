@@ -1,8 +1,8 @@
 //! zglabi —— miniGL + winsys 的 C ABI（userland/include/zgl.h 的实现）
 //!
-//! 让 C 程序也能用 ZOS 的软件 OpenGL：同一份 gl.zig，Zig 应用直接
-//! @import，C 应用链接 libzos.a 后调 zgl* 函数。前缀取 zgl/zwin 而
-//! 不是 gl——避免与桌面系统的 libGL 符号混淆，也明确这是 ZOS 子集。
+//! 让 C 程序也能用 OusiaOS 的软件 OpenGL：同一份 gl.zig，Zig 应用直接
+//! @import，C 应用链接 libousia.a 后调 zgl* 函数。前缀取 zgl/zwin 而
+//! 不是 gl——避免与桌面系统的 libGL 符号混淆，也明确这是 OusiaOS 子集。
 //!
 //! 上下文与深度缓冲是本库的静态单例（每进程一份，链接进来才存在），
 //! 窗口尺寸上限 ZGL_MAX_W/H——C 侧不需要懂"静态分配"这件事。

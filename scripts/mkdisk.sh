@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 生成 ext2 根文件系统镜像 build/disk.img
 #
-# ZOS 0.3 起 ext2 是【唯一的根文件系统】：/bin（用户程序）、/etc（系统
+# OusiaOS 0.3 起 ext2 是【唯一的根文件系统】：/bin（用户程序）、/etc（系统
 # 配置）全部在这块盘上，内核引导即挂载为 /，initrd/tarfs 不再参与引导。
 # 镜像用宿主机 mke2fs 建空盘 + debugfs 填充——镜像文件本身就是标准
 # ext2，可用 debugfs/e2fsck 直接检查。
